@@ -1,16 +1,18 @@
-//! Proxy optimizado para OpenAI/Claude: `POST /interviews/:id/ai/assistant-relay`
+//! Proxy optimizado para OpenAI, Claude o DeepSeek: `POST /interviews/:id/ai/assistant-relay`
 //!
 //! - **JWT** (`RELAY_JWT_SECRET`): HS256, claims `sub`, `interviewId`, `exp`, `iat`.
 //! - **Rate limit** (Redis): `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_SECS` por usuario+entrevista.
 //! - **Streaming SSE**: `text/event-stream`; cada `data:` es un JSON array de strings (solo fragmentos de texto).
-//! - **Proveedores**: OpenAI (default), Claude via env var `AI_PROVIDER`.
+//! - **Proveedores**: OpenAI (default), Claude o DeepSeek via env var `AI_PROVIDER`.
 //! - **Configuración**:
-//!   - `AI_PROVIDER`: "openai" (default) | "claude" | "anthropic"
-//!   - `INTERVIEW_AGENT_MODEL`: modelo a usar (defaults: OpenAI `gpt-4o-mini`, Claude `claude-sonnet-4-20250514`)
+//!   - `AI_PROVIDER`: "openai" (default) | "claude" | "anthropic" | "deepseek"
+//!   - `INTERVIEW_AGENT_MODEL`: modelo a usar (defaults: OpenAI `gpt-4o-mini`, Claude `claude-sonnet-4-20250514`, DeepSeek `deepseek-v4-flash`)
 //!   - `INTERVIEW_AGENT_MAX_TOKENS`: max output tokens (default: 512, max: 4096)
-//!   - `INTERVIEW_AGENT_TEMPERATURE`: 0.0-2.0 (default: 0.6; solo **OpenAI** — Anthropic omite el campo: muchos modelos nuevos deprecan `temperature`)
+//!   - `INTERVIEW_AGENT_TEMPERATURE`: 0.0-2.0 (default: 0.6; **OpenAI** y **DeepSeek**; Anthropic omite el campo: muchos modelos nuevos deprecan `temperature`)
 //!   - `INTERVIEW_AGENT_MAX_HISTORY`: mensajes en historial (default: 10, min: 4, max: 32)
-//!   - `OPENAI_API_KEY` o `ANTHROPIC_API_KEY` según proveedor
+//!   - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` o `DEEPSEEK_API_KEY` según proveedor
+//!   - DeepSeek: `DEEPSEEK_CHAT_COMPLETIONS_URL` — URI completa del endpoint (default: `https://api.deepseek.com/chat/completions`)
+//!   - `RELAY_DOTENV_PATH` (opcional): ruta absoluta a un archivo `.env` si el proceso no arranca con `WorkingDirectory` donde está el proyecto (p. ej. systemd).
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -71,6 +73,7 @@ struct AiConfig {
 enum AiProvider {
     OpenAi,
     Claude,
+    DeepSeek,
 }
 
 impl AiProvider {
@@ -81,6 +84,7 @@ impl AiProvider {
             .as_str()
         {
             "claude" | "anthropic" => Self::Claude,
+            "deepseek" => Self::DeepSeek,
             _ => Self::OpenAi,
         }
     }
@@ -93,6 +97,7 @@ impl AiConfig {
             match provider {
                 AiProvider::OpenAi => "gpt-4o-mini".to_string(),
                 AiProvider::Claude => "claude-sonnet-4-20250514".to_string(),
+                AiProvider::DeepSeek => "deepseek-v4-flash".to_string(),
             }
         });
 
@@ -236,6 +241,7 @@ struct OpenAiStreamChoice {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiStreamEvent {
+    #[serde(default)]
     choices: Vec<OpenAiStreamChoice>,
 }
 
@@ -653,33 +659,28 @@ async fn stream_anthropic(config: &AiConfig, messages: Vec<Value>) -> Result<Box
     Ok(Box::pin(events_stream))
 }
 
-async fn stream_openai(config: &AiConfig, messages: Vec<Value>) -> Result<BoxedStream, String> {
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .map_err(|_| "OPENAI_API_KEY no configurada".to_string())?;
-
+/// Streaming SSE estilo OpenAI (`choices[].delta.content`), compartido por OpenAI y DeepSeek.
+async fn stream_openai_compatible_chat_completions(
+    provider_label: &'static str,
+    url: &str,
+    api_key: &str,
+    req_body: Value,
+) -> Result<BoxedStream, String> {
     let client = reqwest::Client::new();
-    let req_body = json!({
-        "model": &config.model,
-        "messages": messages,
-        "stream": true,
-        "temperature": config.temperature,
-        "max_completion_tokens": config.max_output_tokens,
-    });
-
     let res = client
-        .post("https://api.openai.com/v1/chat/completions")
+        .post(url)
         .header("Authorization", format!("Bearer {}", api_key))
         .json(&req_body)
         .send()
         .await
-        .map_err(|e| format!("OpenAI request failed: {}", e))?;
+        .map_err(|e| format!("{provider_label} request failed: {e}"))?;
 
     if !res.status().is_success() {
         let err_text = res
             .text()
             .await
             .unwrap_or_else(|_| "unknown error".to_string());
-        return Err(format!("OpenAI API error: {}", err_text));
+        return Err(format!("{provider_label} API error: {}", err_text));
     }
 
     let stream = res.bytes_stream();
@@ -716,6 +717,47 @@ async fn stream_openai(config: &AiConfig, messages: Vec<Value>) -> Result<BoxedS
     };
 
     Ok(Box::pin(events_stream))
+}
+
+async fn stream_openai(config: &AiConfig, messages: Vec<Value>) -> Result<BoxedStream, String> {
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .map_err(|_| "OPENAI_API_KEY no configurada".to_string())?;
+
+    let req_body = json!({
+        "model": &config.model,
+        "messages": messages,
+        "stream": true,
+        "temperature": config.temperature,
+        "max_completion_tokens": config.max_output_tokens,
+    });
+
+    stream_openai_compatible_chat_completions(
+        "OpenAI",
+        "https://api.openai.com/v1/chat/completions",
+        &api_key,
+        req_body,
+    )
+    .await
+}
+
+async fn stream_deepseek(config: &AiConfig, messages: Vec<Value>) -> Result<BoxedStream, String> {
+    let api_key = std::env::var("DEEPSEEK_API_KEY")
+        .map_err(|_| "DEEPSEEK_API_KEY no configurada".to_string())?;
+
+    let url = std::env::var("DEEPSEEK_CHAT_COMPLETIONS_URL").unwrap_or_else(|_| {
+        "https://api.deepseek.com/chat/completions".to_string()
+    });
+
+    // DeepSeek documenta `max_tokens` (compatible OpenAI en el resto del contrato).
+    let req_body = json!({
+        "model": &config.model,
+        "messages": messages,
+        "stream": true,
+        "temperature": config.temperature,
+        "max_tokens": config.max_output_tokens,
+    });
+
+    stream_openai_compatible_chat_completions("DeepSeek", &url, &api_key, req_body).await
 }
 
 fn bearer_token(headers: &HeaderMap) -> Result<String, RelayError> {
@@ -791,6 +833,12 @@ async fn assistant_relay(
                 .await
                 .map_err(|e| RelayError::AiProvider(e))?
         }
+        AiProvider::DeepSeek => {
+            let config = st.ai_config.as_ref();
+            stream_deepseek(config, messages)
+                .await
+                .map_err(|e| RelayError::AiProvider(e))?
+        }
     };
 
     let sse = Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)));
@@ -852,9 +900,23 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// Carga variables desde disco antes del resto del arranque (incl. filtros de tracing).
+/// systemd suele no tener `.env` en el cwd: usa `WorkingDirectory=...` o `RELAY_DOTENV_PATH=/ruta/.env`.
+fn load_dotenv_files() -> Option<std::path::PathBuf> {
+    if let Ok(raw) = std::env::var("RELAY_DOTENV_PATH") {
+        let path = raw.trim();
+        if !path.is_empty() {
+            if dotenvy::from_path(path).is_ok() {
+                return Some(std::path::PathBuf::from(path));
+            }
+        }
+    }
+    dotenvy::dotenv().ok()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _ = dotenvy::dotenv();
+    let dotenv_loaded_from = load_dotenv_files();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -862,6 +924,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .add_directive("interview_relay_sim=info".parse().unwrap()),
         )
         .init();
+
+    if let Some(ref p) = dotenv_loaded_from {
+        info!(path = %p.display(), ".env cargado desde disco");
+    }
 
     let secret = std::env::var("RELAY_JWT_SECRET").expect("RELAY_JWT_SECRET debe estar definida");
     let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL debe estar definida (ej. redis://127.0.0.1:6379)");
@@ -876,6 +942,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ai_config = AiConfig::from_env();
 
     info!(
+        AI_PROVIDER_env = %std::env::var("AI_PROVIDER").unwrap_or_else(|_| "(no definida)".to_string()),
         provider = ?ai_config.provider,
         model = %ai_config.model,
         max_tokens = ai_config.max_output_tokens,
