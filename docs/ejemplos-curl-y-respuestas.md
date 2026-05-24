@@ -5,6 +5,7 @@ Endpoint: **`POST /interviews/:id/ai/assistant-relay`**
 - **`:id`**: debe coincidir con el claim **`interviewId`** del JWT.
 - **Autenticación**: cabecera `Authorization: Bearer <JWT>` (HS256, misma clave que `RELAY_JWT_SECRET`).
 - **Cuerpo**: JSON con **`messages`** (array no vacío de mensajes estilo chat).
+- Opcional: **`maxOutputTokens`** / **`max_output_tokens`** (u32): límite de tokens de respuesta pedido por el cliente; el servidor lo recorta al techo `INTERVIEW_AGENT_MAX_TOKENS` y como mínimo 64.
 
 Claims típicos del JWT: `sub` (id de usuario), `interviewId`, `exp`; opcional `iat` (si existe, `exp - iat` no puede superar 5 minutos).
 

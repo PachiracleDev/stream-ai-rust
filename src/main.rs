@@ -7,7 +7,7 @@
 //! - **Configuración**:
 //!   - `AI_PROVIDER`: "openai" (default) | "claude" | "anthropic" | "deepseek"
 //!   - `INTERVIEW_AGENT_MODEL`: modelo a usar (defaults: OpenAI `gpt-4o-mini`, Claude `claude-sonnet-4-20250514`, DeepSeek `deepseek-v4-flash`)
-//!   - `INTERVIEW_AGENT_MAX_TOKENS`: max output tokens (default: 512, max: 4096)
+//!   - `INTERVIEW_AGENT_MAX_TOKENS`: techo de tokens de salida por petición — el valor efectivo llega opcionalmente en el JSON (`max_output_tokens` / `maxOutputTokens`), recortado entre 64 y este techo si hace falta
 //!   - `INTERVIEW_AGENT_TEMPERATURE`: 0.0-2.0 (default: 0.6; **OpenAI** y **DeepSeek**; Anthropic omite el campo: muchos modelos nuevos deprecan `temperature`)
 //!   - `INTERVIEW_AGENT_MAX_HISTORY`: mensajes en historial (default: 10, min: 4, max: 32)
 //!   - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` o `DEEPSEEK_API_KEY` según proveedor
@@ -64,7 +64,8 @@ return 1
 struct AiConfig {
     provider: AiProvider,
     model: String,
-    max_output_tokens: u32,
+    /// Límite superior de tokens de salida (`.env`). Si el cliente no envía valor en el body, se usa este techo tal cual como límite efectivo (comportamiento anterior).
+    max_output_tokens_cap: u32,
     temperature: f64,
     max_history_messages: usize,
 }
@@ -101,7 +102,7 @@ impl AiConfig {
             }
         });
 
-        let max_output_tokens = std::env::var("INTERVIEW_AGENT_MAX_TOKENS")
+        let max_output_tokens_cap = std::env::var("INTERVIEW_AGENT_MAX_TOKENS")
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
             .map(|v| v.min(4096).max(64))
@@ -122,10 +123,21 @@ impl AiConfig {
         Self {
             provider,
             model,
-            max_output_tokens,
+            max_output_tokens_cap,
             temperature,
             max_history_messages,
         }
+    }
+}
+
+const OUTPUT_TOKENS_MIN: u32 = 64;
+
+/// `requested` viene del cliente; no puede pasar del techo `cap` (`.env`) ni bajar de [`OUTPUT_TOKENS_MIN`].
+fn effective_output_max_tokens(requested: Option<u32>, cap: u32) -> u32 {
+    let cap = cap.max(OUTPUT_TOKENS_MIN);
+    match requested {
+        Some(n) => n.min(cap).max(OUTPUT_TOKENS_MIN),
+        None => cap,
     }
 }
 
@@ -193,6 +205,9 @@ impl RedisRateLimiter {
 #[derive(Debug, Deserialize)]
 struct RelayBody {
     messages: Vec<serde_json::Value>,
+    /// Límite deseado de tokens de salida (recortado al techo `INTERVIEW_AGENT_MAX_TOKENS`).
+    #[serde(default, rename = "maxOutputTokens", alias = "max_output_tokens")]
+    max_output_tokens: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -567,7 +582,11 @@ fn openai_style_to_anthropic(messages: Vec<Value>) -> Result<(Option<String>, Ve
     Ok((system, out))
 }
 
-async fn stream_anthropic(config: &AiConfig, messages: Vec<Value>) -> Result<BoxedStream, String> {
+async fn stream_anthropic(
+    config: &AiConfig,
+    messages: Vec<Value>,
+    max_output_tokens: u32,
+) -> Result<BoxedStream, String> {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| "ANTHROPIC_API_KEY no configurada".to_string())?;
 
@@ -577,7 +596,7 @@ async fn stream_anthropic(config: &AiConfig, messages: Vec<Value>) -> Result<Box
     // ("`temperature` is deprecated for this model").
     let mut req_body = json!({
         "model": &config.model,
-        "max_tokens": config.max_output_tokens,
+        "max_tokens": max_output_tokens,
         "messages": anth_messages,
         "stream": true,
     });
@@ -719,7 +738,11 @@ async fn stream_openai_compatible_chat_completions(
     Ok(Box::pin(events_stream))
 }
 
-async fn stream_openai(config: &AiConfig, messages: Vec<Value>) -> Result<BoxedStream, String> {
+async fn stream_openai(
+    config: &AiConfig,
+    messages: Vec<Value>,
+    max_output_tokens: u32,
+) -> Result<BoxedStream, String> {
     let api_key = std::env::var("OPENAI_API_KEY")
         .map_err(|_| "OPENAI_API_KEY no configurada".to_string())?;
 
@@ -728,7 +751,7 @@ async fn stream_openai(config: &AiConfig, messages: Vec<Value>) -> Result<BoxedS
         "messages": messages,
         "stream": true,
         "temperature": config.temperature,
-        "max_completion_tokens": config.max_output_tokens,
+        "max_completion_tokens": max_output_tokens,
     });
 
     stream_openai_compatible_chat_completions(
@@ -740,7 +763,11 @@ async fn stream_openai(config: &AiConfig, messages: Vec<Value>) -> Result<BoxedS
     .await
 }
 
-async fn stream_deepseek(config: &AiConfig, messages: Vec<Value>) -> Result<BoxedStream, String> {
+async fn stream_deepseek(
+    config: &AiConfig,
+    messages: Vec<Value>,
+    max_output_tokens: u32,
+) -> Result<BoxedStream, String> {
     let api_key = std::env::var("DEEPSEEK_API_KEY")
         .map_err(|_| "DEEPSEEK_API_KEY no configurada".to_string())?;
 
@@ -754,7 +781,7 @@ async fn stream_deepseek(config: &AiConfig, messages: Vec<Value>) -> Result<Boxe
         "messages": messages,
         "stream": true,
         "temperature": config.temperature,
-        "max_tokens": config.max_output_tokens,
+        "max_tokens": max_output_tokens,
     });
 
     stream_openai_compatible_chat_completions("DeepSeek", &url, &api_key, req_body).await
@@ -820,22 +847,35 @@ async fn assistant_relay(
         .collect::<Vec<_>>();
     normalize_openai_message_contents(&mut messages);
 
+    let cap = st.ai_config.max_output_tokens_cap;
+    let max_out = effective_output_max_tokens(body.max_output_tokens, cap);
+    if let Some(requested) = body.max_output_tokens {
+        if requested != max_out {
+            tracing::debug!(
+                requested,
+                effective = max_out,
+                cap,
+                "max_output_tokens ajustado (mínimo 64 o techo .env)"
+            );
+        }
+    }
+
     let stream = match st.ai_config.provider {
         AiProvider::OpenAi => {
             let config = st.ai_config.as_ref();
-            stream_openai(config, messages)
+            stream_openai(config, messages, max_out)
                 .await
                 .map_err(|e| RelayError::AiProvider(e))?
         }
         AiProvider::Claude => {
             let config = st.ai_config.as_ref();
-            stream_anthropic(config, messages)
+            stream_anthropic(config, messages, max_out)
                 .await
                 .map_err(|e| RelayError::AiProvider(e))?
         }
         AiProvider::DeepSeek => {
             let config = st.ai_config.as_ref();
-            stream_deepseek(config, messages)
+            stream_deepseek(config, messages, max_out)
                 .await
                 .map_err(|e| RelayError::AiProvider(e))?
         }
@@ -945,7 +985,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AI_PROVIDER_env = %std::env::var("AI_PROVIDER").unwrap_or_else(|_| "(no definida)".to_string()),
         provider = ?ai_config.provider,
         model = %ai_config.model,
-        max_tokens = ai_config.max_output_tokens,
+        max_output_tokens_cap = ai_config.max_output_tokens_cap,
         temperature = ai_config.temperature,
         max_history = ai_config.max_history_messages,
         "AI config loaded"
