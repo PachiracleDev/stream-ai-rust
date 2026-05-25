@@ -6,6 +6,8 @@ description = "Simulación del assistant-relay (SSE) con JWT de corta duración 
 
 [dependencies]
 axum = { version = "0.7", features = ["http2"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+colored = "2"
 dotenvy = "0.15"
 futures = "0.3"
 http = "1"
