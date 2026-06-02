@@ -31,12 +31,24 @@ impl PromptStore {
     }
 }
 
+fn optional_value(value: &Option<String>) -> &str {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("")
+}
+
 fn render_template(template: &str, v: &RelayValues) -> String {
+    let profile_minimal = optional_value(&v.profile_minimal);
+    let last_jobs = optional_value(&v.last_jobs);
+    let tech_keywords = optional_value(&v.tech_keywords);
     template
         .replace("{{jobPosition}}", &v.job_position)
         .replace("{{regionalism}}", &v.regionalism)
         .replace("{{responseLanguage}}", &v.response_language)
-        .replace("{{profileMinimal}}", &v.profile_minimal)
-        .replace("{{lastJobs}}", &v.last_jobs)
-        .replace("{{lastRole}}", &v.last_jobs)
+        .replace("{{profileMinimal}}", profile_minimal)
+        .replace("{{lastJobs}}", last_jobs)
+        .replace("{{lastRole}}", last_jobs)
+        .replace("{{techKeywords}}", tech_keywords)
 }

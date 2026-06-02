@@ -41,8 +41,12 @@ pub struct RelayValues {
     pub job_position: String,
     pub regionalism: String,
     pub response_language: String,
-    pub profile_minimal: String,
-    pub last_jobs: String,
+    #[serde(default)]
+    pub profile_minimal: Option<String>,
+    #[serde(default)]
+    pub last_jobs: Option<String>,
+    #[serde(default, alias = "tech_keywords")]
+    pub tech_keywords: Option<String>,
 }
 
 /// Mensaje del cliente (texto y/o imagen).
@@ -62,4 +66,24 @@ pub struct RelayBody {
     #[serde(rename = "type")]
     pub agent_type: AgentType,
     pub values: RelayValues,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_values_accepts_missing_optional_fields() {
+        let v: RelayValues = serde_json::from_str(
+            r#"{
+                "jobPosition": "Backend",
+                "regionalism": "es-MX",
+                "responseLanguage": "español"
+            }"#,
+        )
+        .unwrap();
+        assert!(v.profile_minimal.is_none());
+        assert!(v.last_jobs.is_none());
+        assert!(v.tech_keywords.is_none());
+    }
 }
