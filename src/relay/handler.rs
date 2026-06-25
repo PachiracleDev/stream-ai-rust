@@ -226,13 +226,17 @@ pub async fn assistant_relay(
     let mut perf = relay_perf("handler");
     step(&mut perf, "enter");
 
-    let token = bearer_token(&headers)?;
-    let claims = decode_claims(&token, &st.decoding_key)?;
-    validate_claims(&claims, interview_id)?;
+    let user_id = if st.skip_jwt {
+        "dev".to_string()
+    } else {
+        let token = bearer_token(&headers)?;
+        let claims = decode_claims(&token, &st.decoding_key)?;
+        validate_claims(&claims, interview_id)?;
+        claims.sub.as_key_segment()
+    };
     step(&mut perf, "jwt_ok");
 
-    let user_id = claims.sub.as_key_segment();
-    let rate_key = format!("{user_id}:{}", claims.interview_id);
+    let rate_key = format!("{user_id}:{interview_id}");
     match st.limiter.check_allowed(&rate_key).await {
         Ok(true) => {}
         Ok(false) => return Err(RelayError::Rate(st.rate_limit_max)),

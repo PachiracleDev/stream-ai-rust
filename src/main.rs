@@ -28,7 +28,7 @@ use tower_http::cors::CorsLayer;
 use tracing::info;
 
 use app::AppState;
-use config::{env_u32, env_u64, load_dotenv_files, prompts_dir, AiConfig};
+use config::{env_u32, env_u64, load_dotenv_files, prompts_dir, relay_skip_jwt, AiConfig};
 use rate_limit::{RateLimitBackend, RateLimiter};
 use relay::expand::expand_response;
 use relay::handler::assistant_relay;
@@ -91,8 +91,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "rate limit configured"
     );
 
+    let skip_jwt = relay_skip_jwt();
+    if skip_jwt {
+        tracing::warn!(
+            "RELAY_SKIP_JWT activo: assistant-relay no exige JWT (solo pruebas locales)"
+        );
+    }
+
     let state = AppState {
         decoding_key: DecodingKey::from_secret(secret.as_bytes()),
+        skip_jwt,
         limiter: Arc::new(limiter),
         expand_limiter,
         rate_limit_max,

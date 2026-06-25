@@ -304,6 +304,24 @@ pub fn env_u64(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// `1`, `true`, `yes`, `on` → true; ausente u otro valor → false.
+pub fn env_bool(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|s| {
+            matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Solo pruebas locales: omite Bearer/JWT en `assistant-relay`.
+pub fn relay_skip_jwt() -> bool {
+    env_bool("RELAY_SKIP_JWT")
+}
+
 fn env_f64(name: &str, default: f64) -> f64 {
     std::env::var(name)
         .ok()
