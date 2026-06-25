@@ -65,14 +65,25 @@ pub async fn stream_agent(
         }
         UpstreamKind::Groq => {
             let url = config.credentials.chat_url_for(upstream);
-            let req_body = json!({
+            let max_tokens = if crate::config::is_gpt_oss_model(&model) {
+                crate::config::groq_gpt_oss_completion_tokens(max_output_tokens)
+            } else {
+                max_output_tokens
+            };
+            let mut req_body = json!({
                 "model": model,
                 "messages": messages,
                 "stream": true,
                 "stream_options": { "include_usage": true },
                 "temperature": config.temperature,
-                "max_tokens": max_output_tokens,
+                "max_tokens": max_tokens,
             });
+            if crate::config::is_gpt_oss_model(&model) {
+                if let Some(obj) = req_body.as_object_mut() {
+                    // Sin esto Groq emite delta.reasoning y no delta.content → stream vacío.
+                    obj.insert("reasoning_format".into(), json!("hidden"));
+                }
+            }
             openai_compat::stream_chat_completions(
                 label,
                 url,

@@ -9,11 +9,11 @@ const DEFAULT_GROQ_URL: &str = "https://api.groq.com/openai/v1/chat/completions"
 const DEFAULT_GROQ_MODEL: &str = "openai/gpt-oss-20b";
 
 const DEFAULT_MODEL_DETECTOR: &str = "groq";
-const DEFAULT_MAX_TOKENS_DETECTOR: u32 = 80;
+const DEFAULT_MAX_TOKENS_DETECTOR: u32 = 256;
 const DEFAULT_MODEL_OPENER: &str = "groq";
-const DEFAULT_MAX_TOKENS_OPENER: u32 = 120;
+const DEFAULT_MAX_TOKENS_OPENER: u32 = 384;
 const DEFAULT_MODEL_DEEPENER: &str = "groq";
-const DEFAULT_MAX_TOKENS_DEEPENER: u32 = 350;
+const DEFAULT_MAX_TOKENS_DEEPENER: u32 = 512;
 const DEFAULT_MODEL_IMAGE_SOLVER: &str = "gpt-5.4-nano";
 const DEFAULT_MAX_TOKENS_IMAGE_SOLVER: u32 = 4000;
 
@@ -208,6 +208,16 @@ pub fn classify_model(raw: &str) -> (UpstreamKind, String) {
     (UpstreamKind::OpenAi, trimmed.to_string())
 }
 
+/// Modelos GPT-OSS en Groq reservan tokens de completion para razonamiento interno.
+pub fn is_gpt_oss_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("gpt-oss")
+}
+
+/// Piso de `max_tokens` para que GPT-OSS alcance a emitir `content` tras el razonamiento.
+pub fn groq_gpt_oss_completion_tokens(requested: u32) -> u32 {
+    requested.max(512)
+}
+
 fn resolve_agent_model(
     model_env: &str,
     default_model: &str,
@@ -334,5 +344,8 @@ mod tests {
             classify_model("openai/gpt-oss-20b"),
             (UpstreamKind::Groq, "openai/gpt-oss-20b".to_string())
         );
+        assert!(is_gpt_oss_model("openai/gpt-oss-20b"));
+        assert_eq!(groq_gpt_oss_completion_tokens(120), 512);
+        assert_eq!(groq_gpt_oss_completion_tokens(512), 512);
     }
 }

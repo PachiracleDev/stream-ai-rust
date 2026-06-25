@@ -29,6 +29,8 @@ struct OpenAiStreamDelta {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    reasoning: Option<String>,
+    #[serde(default)]
     reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<serde_json::Value>>,
@@ -89,11 +91,13 @@ fn process_raw_sse(
         .iter()
         .flat_map(|c| {
             [
+                c.delta.content.as_deref().filter(|s| !s.is_empty()),
                 c.delta
                     .reasoning_content
                     .as_deref()
                     .filter(|s| !s.is_empty()),
-                c.delta.content.as_deref().filter(|s| !s.is_empty()),
+                // Fallback: algunos proveedores (Groq gpt-oss sin reasoning_format) usan "reasoning".
+                c.delta.reasoning.as_deref().filter(|s| !s.is_empty()),
             ]
             .into_iter()
             .flatten()
@@ -167,8 +171,9 @@ async fn stream_one_attempt(
             .map_err(|e| format!("{provider_label} request failed: {e}"))?;
 
         if !res.status().is_success() {
+            let status = res.status();
             let err_text = res.text().await.unwrap_or_else(|_| "unknown".into());
-            return Err(format!("{provider_label} API error: {err_text}"));
+            return Err(format!("{provider_label} API error ({status}): {err_text}"));
         }
 
         if let Some(c) = &log_ctx {
@@ -261,6 +266,7 @@ pub async fn stream_chat_completions(
                     attempt = idx + 1,
                     attempts,
                     provider = provider_label,
+                    agent_type = log_ctx.as_ref().map(|c| c.agent_type.as_str()).unwrap_or("unknown"),
                     error = %e,
                     "reintento upstream (primer fragmento)"
                 );
