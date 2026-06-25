@@ -17,6 +17,7 @@ pub async fn stream_agent(
     agent: AgentType,
     messages: Vec<Value>,
     log_ctx: Option<Arc<StreamLogCtx>>,
+    emit_finish: bool,
 ) -> Result<BoxedStream, String> {
     let binding = config.agent(agent);
     let max_output_tokens = binding.max_tokens;
@@ -28,7 +29,8 @@ pub async fn stream_agent(
 
     match upstream {
         UpstreamKind::Anthropic => {
-            anthropic::stream_messages(&model, messages, max_output_tokens, log_ctx).await
+            anthropic::stream_messages(&model, messages, max_output_tokens, log_ctx, emit_finish)
+                .await
         }
         UpstreamKind::OpenAi => {
             let url = config.credentials.chat_url_for(upstream);
@@ -39,17 +41,26 @@ pub async fn stream_agent(
                     config.temperature,
                     max_output_tokens,
                 )?;
-                openai_responses::stream_responses(url, &api_key, req_body, log_ctx).await
+                openai_responses::stream_responses(url, &api_key, req_body, log_ctx, emit_finish)
+                    .await
             } else {
                 let req_body = json!({
                     "model": model,
                     "messages": messages,
                     "stream": true,
+                    "stream_options": { "include_usage": true },
                     "temperature": config.temperature,
                     "max_completion_tokens": max_output_tokens,
                 });
-                openai_compat::stream_chat_completions(label, url, &api_key, req_body, log_ctx)
-                    .await
+                openai_compat::stream_chat_completions(
+                    label,
+                    url,
+                    &api_key,
+                    req_body,
+                    log_ctx,
+                    emit_finish,
+                )
+                .await
             }
         }
         UpstreamKind::Groq => {
@@ -58,10 +69,19 @@ pub async fn stream_agent(
                 "model": model,
                 "messages": messages,
                 "stream": true,
+                "stream_options": { "include_usage": true },
                 "temperature": config.temperature,
                 "max_tokens": max_output_tokens,
             });
-            openai_compat::stream_chat_completions(label, url, &api_key, req_body, log_ctx).await
+            openai_compat::stream_chat_completions(
+                label,
+                url,
+                &api_key,
+                req_body,
+                log_ctx,
+                emit_finish,
+            )
+            .await
         }
         UpstreamKind::DeepSeek => {
             let url = config.credentials.chat_url_for(upstream);
@@ -69,6 +89,7 @@ pub async fn stream_agent(
                 "model": model,
                 "messages": messages,
                 "stream": true,
+                "stream_options": { "include_usage": true },
                 "temperature": config.temperature,
                 "max_tokens": max_output_tokens,
             });
@@ -83,6 +104,7 @@ pub async fn stream_agent(
                 &api_key,
                 req_body,
                 log_ctx,
+                emit_finish,
             )
             .await
         }

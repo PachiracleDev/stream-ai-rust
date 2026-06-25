@@ -12,7 +12,17 @@ use tokio::time::timeout;
 use crate::config::{relay_first_chunk_deadline, upstream_attempt_count};
 use crate::perf::{relay_perf, step};
 use crate::streaming::log::StreamLogCtx;
-use crate::streaming::BoxedStream;
+use crate::streaming::{finish_events, BoxedStream};
+
+#[derive(Debug, Deserialize)]
+struct OpenAiUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u32>,
+    #[serde(default)]
+    completion_tokens: Option<u32>,
+    #[serde(default)]
+    total_tokens: Option<u32>,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 struct OpenAiStreamDelta {
@@ -35,6 +45,8 @@ struct OpenAiStreamChoice {
 struct OpenAiStreamEvent {
     #[serde(default)]
     choices: Vec<OpenAiStreamChoice>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
 }
 
 enum SseDecision {
@@ -58,6 +70,19 @@ fn process_raw_sse(
     let Ok(event) = serde_json::from_str::<OpenAiStreamEvent>(data_trim) else {
         return Ok(SseDecision::Skip);
     };
+
+    if let Some(usage) = &event.usage {
+        if let Some(c) = log_ctx {
+            c.token_usage.record_openai_style(
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+            );
+        }
+        if event.choices.is_empty() {
+            return Ok(SseDecision::Skip);
+        }
+    }
 
     let fragments: Vec<&str> = event
         .choices
@@ -126,6 +151,7 @@ async fn stream_one_attempt(
     req_body: serde_json::Value,
     log_ctx: Option<Arc<StreamLogCtx>>,
     attempt_no: u32,
+    emit_finish: bool,
 ) -> Result<BoxedStream, String> {
     let mut perf = relay_perf(format!("{provider_label}↑{attempt_no}"));
     match timeout(deadline, async move {
@@ -156,17 +182,26 @@ async fn stream_one_attempt(
             for ev in prelude_events {
                 yield ev;
             }
+            let mut done = false;
             while let Some(msg) = StreamExt::next(&mut raw_ess).await {
                 match msg {
                     Ok(raw) => match process_raw_sse(&raw, log_ctx_follow.as_ref())? {
                         SseDecision::Skip => {}
                         SseDecision::YieldPayload(ev) => yield ev,
                         SseDecision::StreamDoneSentinel => {
-                            yield Event::default().data("[DONE]");
+                            for ev in finish_events(log_ctx_follow.as_ref(), emit_finish) {
+                                yield ev;
+                            }
+                            done = true;
                             break;
                         }
                     },
                     Err(e) => Err::<(), String>(format!("Event parse error: {e}"))?,
+                }
+            }
+            if !done {
+                for ev in finish_events(log_ctx_follow.as_ref(), emit_finish) {
+                    yield ev;
                 }
             }
         };
@@ -197,6 +232,7 @@ pub async fn stream_chat_completions(
     api_key: &str,
     req_body: serde_json::Value,
     log_ctx: Option<Arc<StreamLogCtx>>,
+    emit_finish: bool,
 ) -> Result<BoxedStream, String> {
     let deadline = relay_first_chunk_deadline();
     let attempts = upstream_attempt_count();
@@ -215,6 +251,7 @@ pub async fn stream_chat_completions(
             req_body.clone(),
             log_ctx.clone(),
             idx + 1,
+            emit_finish,
         )
         .await
         {

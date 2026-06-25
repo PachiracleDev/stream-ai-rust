@@ -14,7 +14,7 @@ use crate::config::{relay_first_chunk_deadline, upstream_attempt_count};
 use crate::perf::{relay_perf, step};
 use crate::streaming::anthropic_convert::openai_style_to_anthropic;
 use crate::streaming::log::StreamLogCtx;
-use crate::streaming::BoxedStream;
+use crate::streaming::{finish_events, BoxedStream};
 
 enum SseDecision {
     Skip,
@@ -33,6 +33,28 @@ fn handle_payload(data: &str, log_ctx: Option<&Arc<StreamLogCtx>>) -> Result<Sse
     };
     let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
     match ty {
+        "message_start" => {
+            if let Some(c) = log_ctx {
+                if let Some(input) = v
+                    .pointer("/message/usage/input_tokens")
+                    .and_then(|n| n.as_u64())
+                {
+                    c.token_usage.record_input(input as u32);
+                }
+            }
+            Ok(SseDecision::Skip)
+        }
+        "message_delta" => {
+            if let Some(c) = log_ctx {
+                if let Some(output) = v
+                    .pointer("/usage/output_tokens")
+                    .and_then(|n| n.as_u64())
+                {
+                    c.token_usage.record_output(output as u32);
+                }
+            }
+            Ok(SseDecision::Skip)
+        }
         "content_block_delta" => {
             let Some(delta) = v.get("delta").and_then(|dv| dv.as_object()) else {
                 return Ok(SseDecision::Skip);
@@ -95,6 +117,7 @@ async fn stream_one_attempt(
     req_body: Value,
     log_ctx: Option<Arc<StreamLogCtx>>,
     attempt_no: u32,
+    emit_finish: bool,
 ) -> Result<BoxedStream, String> {
     let mut perf = relay_perf(format!("Anthropic↑{attempt_no}"));
     match timeout(deadline, async move {
@@ -134,7 +157,9 @@ async fn stream_one_attempt(
                         SseDecision::Skip => {}
                         SseDecision::Yield(ev) => yield ev,
                         SseDecision::MessageStop => {
-                            yield Event::default().data("[DONE]");
+                            for ev in finish_events(log_ctx_follow.as_ref(), emit_finish) {
+                                yield ev;
+                            }
                             done = true;
                             break;
                         }
@@ -143,7 +168,9 @@ async fn stream_one_attempt(
                 }
             }
             if !done {
-                yield Event::default().data("[DONE]");
+                for ev in finish_events(log_ctx_follow.as_ref(), emit_finish) {
+                    yield ev;
+                }
             }
         };
 
@@ -164,6 +191,7 @@ pub async fn stream_messages(
     messages: Vec<Value>,
     max_output_tokens: u32,
     log_ctx: Option<Arc<StreamLogCtx>>,
+    emit_finish: bool,
 ) -> Result<BoxedStream, String> {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .map_err(|_| "ANTHROPIC_API_KEY no configurada".to_string())?;
@@ -192,6 +220,7 @@ pub async fn stream_messages(
             req_body.clone(),
             log_ctx.clone(),
             idx + 1,
+            emit_finish,
         )
         .await
         {

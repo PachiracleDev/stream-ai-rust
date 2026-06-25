@@ -12,7 +12,7 @@ pub struct PromptStore {
 impl PromptStore {
     pub fn load(dir: &Path) -> Result<Self, String> {
         let mut templates = HashMap::new();
-        for agent in [AgentType::Opener, AgentType::Deepener, AgentType::ImageSolver] {
+        for agent in [AgentType::Detector, AgentType::Opener, AgentType::Deepener, AgentType::ImageSolver] {
             let path = dir.join(agent.prompt_filename());
             let raw = std::fs::read_to_string(&path).map_err(|e| {
                 format!("no se pudo leer prompt {}: {e}", path.display())
@@ -42,7 +42,7 @@ fn optional_value(value: &Option<String>) -> &str {
 fn render_template(template: &str, v: &RelayValues) -> String {
     let profile_minimal = optional_value(&v.profile_minimal);
     let last_jobs = optional_value(&v.last_jobs);
-    let tech_keywords = optional_value(&v.tech_keywords);
+    let role_keywords = optional_value(&v.role_keywords);
     template
         .replace("{{jobPosition}}", &v.job_position)
         .replace("{{regionalism}}", &v.regionalism)
@@ -50,5 +50,6 @@ fn render_template(template: &str, v: &RelayValues) -> String {
         .replace("{{profileMinimal}}", profile_minimal)
         .replace("{{lastJobs}}", last_jobs)
         .replace("{{lastRole}}", last_jobs)
-        .replace("{{techKeywords}}", tech_keywords)
+        .replace("{{roleKeywords}}", role_keywords)
+        .replace("{{techKeywords}}", role_keywords)
 }

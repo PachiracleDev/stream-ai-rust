@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use crate::relay::body::{AgentType, RelayMessage};
+use crate::relay::body::RelayMessage;
 
 pub fn build_upstream_messages(
     system_prompt: &str,
@@ -43,21 +43,24 @@ fn relay_message_to_openai(msg: RelayMessage) -> Option<Value> {
     }
 }
 
-pub fn validate_request(agent: AgentType, messages: &[RelayMessage]) -> Result<(), String> {
+pub fn validate_interview_messages(messages: &[RelayMessage]) -> Result<(), String> {
     if messages.is_empty() {
         return Err("messages es obligatorio y no puede estar vacío".into());
     }
-    if agent.uses_vision() {
-        let has_image = messages.iter().any(|m| {
-            m.image_url
-                .as_ref()
-                .is_some_and(|u| !u.trim().is_empty())
-        });
-        if !has_image {
-            return Err(
-                "type image-solver requiere imageUrl en al menos un mensaje".into(),
-            );
-        }
+    Ok(())
+}
+
+pub fn validate_image_solver(messages: &[RelayMessage]) -> Result<(), String> {
+    if messages.is_empty() {
+        return Err("messages es obligatorio y no puede estar vacío".into());
+    }
+    let has_image = messages.iter().any(|m| {
+        m.image_url
+            .as_ref()
+            .is_some_and(|u| !u.trim().is_empty())
+    });
+    if !has_image {
+        return Err("type image-solver requiere imageUrl en al menos un mensaje".into());
     }
     Ok(())
 }

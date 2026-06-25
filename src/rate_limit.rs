@@ -146,6 +146,13 @@ enum RateLimiterInner {
 }
 
 impl RateLimiter {
+    /// Limiter en memoria local, independiente de `RATE_LIMIT_BACKEND`.
+    pub fn memory_only(max: u32, window_secs: u64) -> Self {
+        Self(RateLimiterInner::Memory(MemoryRateLimiter::new(
+            max, window_secs,
+        )))
+    }
+
     pub async fn from_env(max: u32, window_secs: u64) -> Result<Self, redis::RedisError> {
         match RateLimitBackend::from_env() {
             RateLimitBackend::Disabled => Ok(Self(RateLimiterInner::Disabled)),

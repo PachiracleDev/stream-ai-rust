@@ -30,6 +30,7 @@ use tracing::info;
 use app::AppState;
 use config::{env_u32, env_u64, load_dotenv_files, prompts_dir, AiConfig};
 use rate_limit::{RateLimitBackend, RateLimiter};
+use relay::expand::expand_response;
 use relay::handler::assistant_relay;
 use relay::prompts::PromptStore;
 
@@ -63,6 +64,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ai_config = AiConfig::from_env();
 
     info!(
+        detector = %ai_config.detector.model,
+        detector_upstream = ?ai_config.detector.upstream,
+        detector_max_tokens = ai_config.detector.max_tokens,
         opener = %ai_config.opener.model,
         opener_upstream = ?ai_config.opener.upstream,
         opener_max_tokens = ai_config.opener.max_tokens,
@@ -77,17 +81,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let limiter = RateLimiter::from_env(rate_limit_max, rate_window_secs).await?;
+    let expand_limiter = Arc::new(RateLimiter::memory_only(1, 60));
 
     info!(
         rate_limit_backend = rate_limit_backend.label(),
         rate_limit_max,
         rate_window_secs,
+        expand_rate_limit = "memory 1/min per user",
         "rate limit configured"
     );
 
     let state = AppState {
         decoding_key: DecodingKey::from_secret(secret.as_bytes()),
         limiter: Arc::new(limiter),
+        expand_limiter,
         rate_limit_max,
         ai_config: Arc::new(ai_config),
         prompts: Arc::new(prompts),
@@ -98,6 +105,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/interviews/:id/ai/assistant-relay",
             post(assistant_relay),
+        )
+        .route(
+            "/interviews/:id/ai/expand-response",
+            post(expand_response),
         )
         .layer(
             ServiceBuilder::new()
@@ -115,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
 
     info!(
-        "listening GET http://{addr}/health | POST http://{addr}/interviews/:id/ai/assistant-relay"
+        "listening GET http://{addr}/health | POST http://{addr}/interviews/:id/ai/assistant-relay | POST http://{addr}/interviews/:id/ai/expand-response"
     );
 
     axum::serve(listener, app)

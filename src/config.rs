@@ -6,8 +6,10 @@
 const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_DEEPSEEK_URL: &str = "https://api.deepseek.com/chat/completions";
 const DEFAULT_GROQ_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_GROQ_MODEL: &str = "llama-3.1-8b-instant";
+const DEFAULT_GROQ_MODEL: &str = "openai/gpt-oss-20b";
 
+const DEFAULT_MODEL_DETECTOR: &str = "groq";
+const DEFAULT_MAX_TOKENS_DETECTOR: u32 = 80;
 const DEFAULT_MODEL_OPENER: &str = "groq";
 const DEFAULT_MAX_TOKENS_OPENER: u32 = 120;
 const DEFAULT_MODEL_DEEPENER: &str = "groq";
@@ -46,6 +48,7 @@ pub struct AgentModelConfig {
 
 #[derive(Debug, Clone)]
 pub struct AiConfig {
+    pub detector: AgentModelConfig,
     pub opener: AgentModelConfig,
     pub deepener: AgentModelConfig,
     pub image_solver: AgentModelConfig,
@@ -124,6 +127,12 @@ impl AiConfig {
     pub fn from_env() -> Self {
         let credentials = UpstreamCredentials::from_env();
         Self {
+            detector: resolve_agent_model(
+                "MODEL_DETECTOR",
+                DEFAULT_MODEL_DETECTOR,
+                "MAX_TOKENS_DETECTOR",
+                DEFAULT_MAX_TOKENS_DETECTOR,
+            ),
             opener: resolve_agent_model(
                 "MODEL_OPENER",
                 DEFAULT_MODEL_OPENER,
@@ -151,6 +160,7 @@ impl AiConfig {
     pub fn agent(&self, agent: crate::relay::body::AgentType) -> &AgentModelConfig {
         use crate::relay::body::AgentType;
         match agent {
+            AgentType::Detector => &self.detector,
             AgentType::Opener => &self.opener,
             AgentType::Deepener => &self.deepener,
             AgentType::ImageSolver => &self.image_solver,
@@ -161,10 +171,11 @@ impl AiConfig {
 /// Infiere proveedor a partir del valor de `MODEL_*`.
 ///
 /// Valores soportados explícitamente:
-/// - `groq` → Groq + `llama-3.1-8b-instant`
+/// - `groq` → Groq + `openai/gpt-oss-20b`
+/// - `openai/gpt-oss-20b`, `gpt-oss-*` → Groq
 /// - `claude-opus-4-7`, `claude-*` → Anthropic
 /// - `DeepSeek-V4-Flash`, `deepseek-*` → DeepSeek
-/// - `gpt-5.4-nano`, `gpt-*` → OpenAI / Azure (`OPENAI_CHAT_URL`)
+/// - `gpt-5.4-nano`, `gpt-*` (excepto gpt-oss) → OpenAI / Azure (`OPENAI_CHAT_URL`)
 /// - `llama-*`, `mixtral-*`, … → Groq con ese id de modelo
 pub fn classify_model(raw: &str) -> (UpstreamKind, String) {
     let trimmed = raw.trim();
@@ -178,6 +189,9 @@ pub fn classify_model(raw: &str) -> (UpstreamKind, String) {
     }
     if lower.starts_with("claude") || lower.contains("opus") {
         return (UpstreamKind::Anthropic, trimmed.to_string());
+    }
+    if lower.contains("gpt-oss") || lower.starts_with("openai/gpt-oss") {
+        return (UpstreamKind::Groq, trimmed.to_string());
     }
     if lower.starts_with("llama")
         || lower.starts_with("mixtral")
@@ -315,6 +329,10 @@ mod tests {
         assert_eq!(
             classify_model("gpt-5.4-nano").0,
             UpstreamKind::OpenAi
+        );
+        assert_eq!(
+            classify_model("openai/gpt-oss-20b"),
+            (UpstreamKind::Groq, "openai/gpt-oss-20b".to_string())
         );
     }
 }

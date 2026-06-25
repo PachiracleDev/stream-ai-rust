@@ -15,6 +15,8 @@ pub enum RelayError {
     TtlTooLong,
     #[error("rate limit: máximo {0} peticiones / ventana por usuario y entrevista")]
     Rate(u32),
+    #[error("rate limit: máximo 1 ampliación por minuto por usuario")]
+    ExpandRate,
     #[error("servicio de rate limit no disponible")]
     RateLimitBackend,
     #[error("AI provider error: {0}")]
@@ -38,6 +40,13 @@ impl IntoResponse for RelayError {
                 (
                     StatusCode::TOO_MANY_REQUESTS,
                     format!("Máximo {n} peticiones por ventana (usuario + entrevista)"),
+                )
+            }
+            ExpandRate => {
+                tracing::warn!("rate limit ampliar respuesta por usuario");
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Máximo 1 ampliación por minuto por usuario".to_string(),
                 )
             }
             RateLimitBackend => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),

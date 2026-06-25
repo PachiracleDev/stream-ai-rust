@@ -1,9 +1,53 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use tracing::info;
 
 use crate::config::UpstreamKind;
+
+/// Tokens consumidos (input + output) reportados por el upstream.
+#[derive(Debug, Default)]
+pub struct TokenUsage {
+    input_tokens: AtomicU32,
+    output_tokens: AtomicU32,
+    total_tokens: AtomicU32,
+}
+
+impl TokenUsage {
+    pub fn record_openai_style(&self, prompt: Option<u32>, completion: Option<u32>, total: Option<u32>) {
+        if let Some(n) = prompt {
+            self.input_tokens.store(n, Ordering::Relaxed);
+        }
+        if let Some(n) = completion {
+            self.output_tokens.store(n, Ordering::Relaxed);
+        }
+        if let Some(n) = total {
+            self.total_tokens.store(n, Ordering::Relaxed);
+        }
+    }
+
+    pub fn record_input(&self, n: u32) {
+        self.input_tokens.store(n, Ordering::Relaxed);
+    }
+
+    pub fn record_output(&self, n: u32) {
+        self.output_tokens.store(n, Ordering::Relaxed);
+    }
+
+    pub fn total(&self) -> Option<u32> {
+        let explicit = self.total_tokens.load(Ordering::Relaxed);
+        if explicit > 0 {
+            return Some(explicit);
+        }
+        let input = self.input_tokens.load(Ordering::Relaxed);
+        let output = self.output_tokens.load(Ordering::Relaxed);
+        if input > 0 || output > 0 {
+            Some(input + output)
+        } else {
+            None
+        }
+    }
+}
 
 /// Contexto de logging por petición (TTFT, metadatos).
 #[derive(Debug)]
@@ -18,6 +62,8 @@ pub struct StreamLogCtx {
     pub model: String,
     pub agent_type: String,
     first_fragment_logged: AtomicBool,
+    pub token_usage: TokenUsage,
+    accumulated_text: Mutex<String>,
 }
 
 impl StreamLogCtx {
@@ -42,7 +88,20 @@ impl StreamLogCtx {
             model,
             agent_type,
             first_fragment_logged: AtomicBool::new(false),
+            token_usage: TokenUsage::default(),
+            accumulated_text: Mutex::new(String::new()),
         }
+    }
+
+    pub fn accumulated_output(&self) -> String {
+        self.accumulated_text
+            .lock()
+            .expect("accumulated_text mutex poisoned")
+            .clone()
+    }
+
+    pub fn total_tokens(&self) -> Option<u32> {
+        self.token_usage.total()
     }
 
     pub fn mark_upstream_ready(&self) {
@@ -57,6 +116,12 @@ impl StreamLogCtx {
         let t = data.trim();
         if t.is_empty() || t == "[DONE]" {
             return;
+        }
+        if let Some(chunk) = crate::streaming::event_text_chunk(t) {
+            self.accumulated_text
+                .lock()
+                .expect("accumulated_text mutex poisoned")
+                .push_str(&chunk);
         }
         if self
             .first_fragment_logged
@@ -86,5 +151,25 @@ impl StreamLogCtx {
             agent_type = %self.agent_type,
             "relay primera respuesta modelo (TTFT)"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_usage_sums_input_and_output() {
+        let usage = TokenUsage::default();
+        usage.record_input(100);
+        usage.record_output(50);
+        assert_eq!(usage.total(), Some(150));
+    }
+
+    #[test]
+    fn token_usage_prefers_explicit_total() {
+        let usage = TokenUsage::default();
+        usage.record_openai_style(Some(100), Some(50), Some(999));
+        assert_eq!(usage.total(), Some(999));
     }
 }

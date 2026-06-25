@@ -146,3 +146,81 @@ El texto varía según el fallo (red, API key, respuesta de OpenAI, etc.):
 | 429 | Rate limit |
 | 502 | Fallo proveedor IA |
 | 503 | Redis del rate limit |
+
+---
+
+# Expand response: `POST /interviews/:id/ai/expand-response`
+
+Amplía una respuesta existente con el modelo **deepener**. Misma autenticación JWT que `assistant-relay`:
+
+- **`:id`**: debe coincidir con **`interviewId`** del JWT.
+- **`Authorization: Bearer <JWT>`** (HS256, `RELAY_JWT_SECRET`).
+- Claims: `sub`, `interviewId`, `exp`; opcional `iat` (TTL máx. 5 min si existe).
+- Rate limit propio: **1 petición / minuto / usuario** (memoria local, independiente del relay).
+
+## Ejemplo con `curl`
+
+```bash
+export JWT="eyJhbGciOiJIUzI1NiJ9..."   # token HS256 válido
+export BASE="http://127.0.0.1:6400"
+export INTERVIEW_ID=200
+
+curl -N -sS -X POST "${BASE}/interviews/${INTERVIEW_ID}/ai/expand-response" \
+  -H "Authorization: Bearer ${JWT}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "question": "¿Qué es DDD en microservicios?",
+    "response": "Fíjate, DDD para mí entra justo cuando el dominio se vuelve denso y el código deja de hablar como el negocio. Lo primero que hago es sentar a producto con el equipo a afinar el lenguaje ubicuo antes de tocar una sola entidad —",
+    "values": {
+      "jobPosition": "Backend Senior",
+      "regionalism": "es-MX",
+      "responseLanguage": "español",
+      "profileMinimal": "8 años backend, Go y microservicios",
+      "lastJobs": "Plataforma de pagos, 40 microservicios",
+      "roleKeywords": ["bounded contexts", "lenguaje ubicuo", "eventos de dominio"]
+    }
+  }'
+```
+
+## Respuesta correcta (200): SSE
+
+Fragmentos de texto en `data:` (array JSON con trozos) y al final metadata de tokens del deepener:
+
+```text
+data: ["porque si el modelo no refleja cómo habla el negocio"]
+
+data: [", los bounded contexts quedan mal cortados"]
+
+data: [" y terminas con acoplamiento donde no lo esperas."]
+
+event: metadata
+data: {"deepenerTokens":287,"totalTokens":287}
+
+data: [DONE]
+
+```
+
+## Errores específicos
+
+### 400 — `question` o `response` vacíos
+
+```json
+{
+  "message": "question es obligatorio",
+  "error": "solicitud inválida: question es obligatorio"
+}
+```
+
+### 429 — Límite de ampliación (1/min por usuario)
+
+```json
+{
+  "message": "Máximo 1 ampliación por minuto por usuario",
+  "error": "rate limit: máximo 1 ampliación por minuto por usuario"
+}
+```
+
+Los códigos **401**, **403** y **502** son los mismos que en `assistant-relay` (JWT, entrevista distinta, fallo del proveedor IA).
+
+---
