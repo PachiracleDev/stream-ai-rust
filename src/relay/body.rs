@@ -102,26 +102,7 @@ pub struct RelayMessage {
 #[derive(Debug, Deserialize)]
 pub struct RelayBody {
     pub messages: Vec<RelayMessage>,
-    /// Solo `image-solver` activa visión. Omitir `type` → opener + deepener en un request.
-    #[serde(default, rename = "type")]
-    pub request_type: Option<RelayRequestType>,
     pub values: RelayValues,
-}
-
-/// Tipo opcional del request. Sin `type` (o legacy `opener`/`deepener`) → pipeline completo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RelayRequestType {
-    Opener,
-    Deepener,
-    #[serde(rename = "image-solver")]
-    ImageSolver,
-}
-
-impl RelayBody {
-    pub fn is_image_solver(&self) -> bool {
-        matches!(self.request_type, Some(RelayRequestType::ImageSolver))
-    }
 }
 
 /// Body de `POST /interviews/:id/ai/expand-response`.
@@ -187,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_body_accepts_missing_type() {
+    fn relay_body_deserializes() {
         let body: RelayBody = serde_json::from_str(
             r#"{
                 "values": {
@@ -199,7 +180,6 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert!(body.request_type.is_none());
-        assert!(!body.is_image_solver());
+        assert_eq!(body.messages.len(), 1);
     }
 }

@@ -18,8 +18,8 @@ use crate::providers;
 use crate::relay::body::{AgentType, RelayBody};
 use crate::relay::interview_pipeline;
 use crate::relay::messages::{
-    build_upstream_messages, system_prompt_len_chars, validate_image_solver,
-    validate_interview_messages,
+    build_upstream_messages, messages_have_image, system_prompt_len_chars,
+    validate_image_solver, validate_interview_messages,
 };
 use crate::streaming::log::StreamLogCtx;
 use crate::streaming::BoxedStream;
@@ -249,7 +249,7 @@ pub async fn assistant_relay(
 
     let req_ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
-    let response = if body.is_image_solver() {
+    let response = if messages_have_image(&body.messages) {
         stream_image_solver(&st, body, interview_id, user_id, req_ts).await?
     } else {
         stream_interview(&st, body, interview_id, user_id, req_ts).await?

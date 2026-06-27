@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::config::AiConfig;
 use crate::providers;
 use crate::relay::body::{AgentType, RelayMessage, RelayValues};
-use crate::relay::messages::build_upstream_messages;
+use crate::relay::messages::{build_upstream_messages, split_interview_messages};
 use crate::relay::prompts::PromptStore;
 use crate::streaming::log::StreamLogCtx;
 use crate::streaming::{stream_interview_finish_events, text_chunk_event, BoxedStream};
@@ -76,14 +76,8 @@ pub async fn stream_opener_then_deepener(
     opener_log: Arc<StreamLogCtx>,
     deepener_log: Arc<StreamLogCtx>,
 ) -> Result<BoxedStream, String> {
-    // Extrae la transcripción del último mensaje de usuario.
-    let transcript = client_messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "user")
-        .and_then(|m| m.content.as_deref())
-        .unwrap_or("")
-        .to_string();
+    // Extrae transcripción nueva + historial previo (user/assistant).
+    let (transcript, prior_history) = split_interview_messages(&client_messages);
 
     // Ejecuta el detector antes de abrir el stream SSE.
     let detector_result = run_detector(
@@ -119,14 +113,17 @@ pub async fn stream_opener_then_deepener(
                 .unwrap_or_else(|| transcript.clone());
 
             // ── Opener ────────────────────────────────────────────────────────
+            let mut opener_input = prior_history.clone();
+            opener_input.push(RelayMessage {
+                role: "user".into(),
+                content: Some(clean_question.clone()),
+                image_url: None,
+            });
+
             let opener_upstream = build_upstream_messages(
                 &opener_system,
-                vec![RelayMessage {
-                    role: "user".into(),
-                    content: Some(clean_question.clone()),
-                    image_url: None,
-                }],
-                1,
+                opener_input,
+                config.max_history_messages,
             );
 
             let mut opener_stream = providers::stream_agent(
@@ -145,37 +142,31 @@ pub async fn stream_opener_then_deepener(
             let opener_text = opener_log.accumulated_output();
 
             // ── Deepener ──────────────────────────────────────────────────────
-            // Solo recibe el arranque del opener y la señal de continuación.
-            // La pregunta no se pasa: el deepener solo necesita continuar lo que el opener dejó.
-            // Las APIs exigen que el primer mensaje sea "user", por eso usamos [continúa] como
-            // dummy inicial; el prompt del deepener ya instruye al modelo a ignorarlo.
-            let deepener_input = if opener_text.trim().is_empty() {
-                vec![RelayMessage {
+            // Historial previo + PREGUNTA + arranque del opener + [continúa].
+            let mut deepener_input = prior_history;
+            deepener_input.extend([
+                RelayMessage {
+                    role: "user".into(),
+                    content: Some(format!("PREGUNTA: {}", clean_question.trim())),
+                    image_url: None,
+                },
+                RelayMessage {
+                    role: "assistant".into(),
+                    content: Some(opener_text.clone()),
+                    image_url: None,
+                },
+                RelayMessage {
                     role: "user".into(),
                     content: Some("[continúa]".into()),
                     image_url: None,
-                }]
-            } else {
-                vec![
-                    RelayMessage {
-                        role: "user".into(),
-                        content: Some("[continúa]".into()),
-                        image_url: None,
-                    },
-                    RelayMessage {
-                        role: "assistant".into(),
-                        content: Some(opener_text),
-                        image_url: None,
-                    },
-                    RelayMessage {
-                        role: "user".into(),
-                        content: Some("[continúa]".into()),
-                        image_url: None,
-                    },
-                ]
-            };
+                },
+            ]);
 
-            let deepener_upstream = build_upstream_messages(&deepener_system, deepener_input, 4);
+            let deepener_upstream = build_upstream_messages(
+                &deepener_system,
+                deepener_input,
+                config.max_history_messages,
+            );
 
             let mut deepener_stream = providers::stream_agent(
                 config.as_ref(),
@@ -185,6 +176,9 @@ pub async fn stream_opener_then_deepener(
                 false,
             )
             .await?;
+
+            // Separador visual entre opener y deepener.
+            yield text_chunk_event(" ");
 
             // El deepener va en negrita en el front (markdown **...**).
             let mut bold_open = false;
