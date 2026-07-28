@@ -9,7 +9,9 @@ use serde::Deserialize;
 
 use crate::config::AiConfig;
 use crate::providers;
-use crate::relay::body::{AgentType, RelayMessage, RelayValues};
+use crate::relay::body::{
+    language_from_detector_or_hint, AgentType, InterviewLanguage, RelayMessage, RelayValues,
+};
 use crate::relay::messages::{build_upstream_messages, split_interview_messages};
 use crate::relay::prompts::PromptStore;
 use crate::streaming::log::StreamLogCtx;
@@ -21,6 +23,8 @@ use crate::streaming::{stream_interview_finish_events, text_chunk_event, BoxedSt
 struct DetectorOutput {
     question: Option<String>,
     intelligible: bool,
+    #[serde(default)]
+    language: Option<String>,
 }
 
 // ── Ejecución del detector (no streaming: drena el stream y parsea JSON) ───────
@@ -43,7 +47,14 @@ async fn run_detector(
         1,
     );
 
-    let mut stream = providers::stream_agent(config, AgentType::Detector, messages, Some(log.clone()), false).await?;
+    let mut stream = providers::stream_agent(
+        config,
+        AgentType::Detector,
+        messages,
+        Some(log.clone()),
+        false,
+    )
+    .await?;
 
     // Drena el stream para que StreamLogCtx acumule el texto; no emitimos nada al cliente.
     while stream.next().await.is_some() {}
@@ -63,6 +74,36 @@ fn parse_detector_output(raw: &str) -> Result<DetectorOutput, String> {
 
     serde_json::from_str::<DetectorOutput>(json_str)
         .map_err(|e| format!("detector: JSON inválido ({e}) — raw: {raw:?}"))
+}
+
+fn localized_recovery(language: InterviewLanguage) -> &'static str {
+    match language {
+        InterviewLanguage::English => "Sorry, I didn't catch that. Could you repeat the question?",
+        InterviewLanguage::Spanish => "Perdona, no te escuché bien, ¿me lo repites?",
+    }
+}
+
+fn continuation_messages(question: &str, opener_text: &str) -> Vec<RelayMessage> {
+    vec![
+        RelayMessage {
+            role: "user".into(),
+            content: Some(format!(
+                "INTERVIEW_QUESTION (preserve its language and meaning): {}",
+                question.trim()
+            )),
+            image_url: None,
+        },
+        RelayMessage {
+            role: "assistant".into(),
+            content: Some(opener_text.to_string()),
+            image_url: None,
+        },
+        RelayMessage {
+            role: "user".into(),
+            content: Some("[CONTINUE_RESPONSE]".into()),
+            image_url: None,
+        },
+    ]
 }
 
 // ── Pipeline completo ──────────────────────────────────────────────────────────
@@ -89,22 +130,32 @@ pub async fn stream_opener_then_deepener(
     )
     .await?;
 
+    // La pregunta detectada determina el idioma de toda la respuesta. Si el
+    // detector no puede darlo, conservamos `responseLanguage` por compatibilidad.
+    let language = language_from_detector_or_hint(
+        detector_result.language.as_deref(),
+        &values.response_language,
+    );
+    let mut response_values = values;
+    response_values.response_language = language.prompt_label().to_string();
+
     // Pre-renderiza los prompts del opener y deepener (puede fallar antes de emitir).
-    let opener_system = prompts.render(AgentType::Opener, &values)?;
-    let deepener_system = prompts.render(AgentType::Deepener, &values)?;
+    let opener_system = prompts.render(AgentType::Opener, &response_values)?;
+    let deepener_system = prompts.render(AgentType::Deepener, &response_values)?;
 
     let stream = try_stream! {
         // ── Evento: pregunta detectada ────────────────────────────────────────
         let question_data = serde_json::json!({
             "question": detector_result.question,
             "intelligible": detector_result.intelligible,
+            "language": language.code(),
         })
         .to_string();
         yield Event::default().event("question").data(question_data);
 
         if !detector_result.intelligible {
             // Audio ininteligible → respuesta de recuperación y cierre.
-            let msg = serde_json::json!(["Perdona, no te escuché bien, ¿me lo repites?"]).to_string();
+            let msg = serde_json::json!([localized_recovery(language)]).to_string();
             yield Event::default().data(msg);
             yield Event::default().data("[DONE]");
         } else {
@@ -142,25 +193,9 @@ pub async fn stream_opener_then_deepener(
             let opener_text = opener_log.accumulated_output();
 
             // ── Deepener ──────────────────────────────────────────────────────
-            // Historial previo + PREGUNTA + arranque del opener + [continúa].
+            // Historial previo + pregunta normalizada + arranque del opener.
             let mut deepener_input = prior_history;
-            deepener_input.extend([
-                RelayMessage {
-                    role: "user".into(),
-                    content: Some(format!("PREGUNTA: {}", clean_question.trim())),
-                    image_url: None,
-                },
-                RelayMessage {
-                    role: "assistant".into(),
-                    content: Some(opener_text.clone()),
-                    image_url: None,
-                },
-                RelayMessage {
-                    role: "user".into(),
-                    content: Some("[continúa]".into()),
-                    image_url: None,
-                },
-            ]);
+            deepener_input.extend(continuation_messages(&clean_question, &opener_text));
 
             let deepener_upstream = build_upstream_messages(
                 &deepener_system,
@@ -205,4 +240,47 @@ pub async fn stream_opener_then_deepener(
     };
 
     Ok(Box::pin(stream))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_detector_output_with_optional_language_and_fences() {
+        let output = parse_detector_output(
+            "```json\n{\"question\":\"What is your approach?\",\"intelligible\":true,\"language\":\"en\"}\n```",
+        )
+        .unwrap();
+
+        assert_eq!(output.question.as_deref(), Some("What is your approach?"));
+        assert_eq!(output.language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn parses_legacy_detector_output_without_fences() {
+        let output =
+            parse_detector_output(r#"{"question":"¿Qué priorizas?","intelligible":true}"#).unwrap();
+
+        assert_eq!(output.question.as_deref(), Some("¿Qué priorizas?"));
+        assert_eq!(output.language, None);
+    }
+
+    #[test]
+    fn continuation_context_is_language_neutral_and_preserves_question() {
+        let messages = continuation_messages("¿Cómo priorizas?", "Mira, empiezo por el impacto —");
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(
+            messages[0].content.as_deref(),
+            Some("INTERVIEW_QUESTION (preserve its language and meaning): ¿Cómo priorizas?")
+        );
+        assert_eq!(messages[2].content.as_deref(), Some("[CONTINUE_RESPONSE]"));
+    }
+
+    #[test]
+    fn recovery_is_localized() {
+        assert!(localized_recovery(InterviewLanguage::English).starts_with("Sorry"));
+        assert!(localized_recovery(InterviewLanguage::Spanish).starts_with("Perdona"));
+    }
 }

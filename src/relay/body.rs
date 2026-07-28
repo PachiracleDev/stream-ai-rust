@@ -13,6 +13,59 @@ pub enum AgentType {
     ImageSolver,
 }
 
+/// Idioma canónico que usa el pipeline de entrevista.
+///
+/// El cliente puede enviar nombres, códigos o locales; los prompts y eventos
+/// SSE usan siempre uno de estos dos códigos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterviewLanguage {
+    English,
+    Spanish,
+}
+
+impl InterviewLanguage {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Spanish => "es",
+        }
+    }
+
+    pub fn prompt_label(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::Spanish => "Spanish",
+        }
+    }
+}
+
+/// Normaliza una preferencia del cliente. El español conserva compatibilidad
+/// con los clientes existentes cuando el valor falta o no es reconocible.
+pub fn language_from_hint(value: &str) -> InterviewLanguage {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized == "en"
+        || normalized.starts_with("en-")
+        || normalized.contains("english")
+        || normalized.contains("inglés")
+        || normalized.contains("ingles")
+    {
+        InterviewLanguage::English
+    } else {
+        InterviewLanguage::Spanish
+    }
+}
+
+/// Prioriza exclusivamente los códigos emitidos por el detector y usa la
+/// preferencia del cliente como fallback para respuestas no inteligibles o
+/// modelos antiguos que no devuelvan `language`.
+pub fn language_from_detector_or_hint(detected: Option<&str>, fallback: &str) -> InterviewLanguage {
+    match detected.map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if value == "en" => InterviewLanguage::English,
+        Some(value) if value == "es" => InterviewLanguage::Spanish,
+        _ => language_from_hint(fallback),
+    }
+}
+
 impl AgentType {
     pub fn prompt_filename(self) -> &'static str {
         match self {
@@ -44,7 +97,7 @@ fn normalize_string_or_list(value: StringOrStringList) -> Option<String> {
     match value {
         StringOrStringList::One(s) => {
             let t = s.trim();
-            (!t.is_empty()).then(|| s)
+            (!t.is_empty()).then_some(s)
         }
         StringOrStringList::Many(items) => {
             let parts: Vec<String> = items
@@ -57,9 +110,7 @@ fn normalize_string_or_list(value: StringOrStringList) -> Option<String> {
     }
 }
 
-fn deserialize_optional_string_or_list<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
+fn deserialize_optional_string_or_list<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -181,5 +232,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body.messages.len(), 1);
+    }
+
+    #[test]
+    fn normalizes_english_hints_and_defaults_unknown_values_to_spanish() {
+        assert_eq!(language_from_hint("en-US"), InterviewLanguage::English);
+        assert_eq!(language_from_hint("English"), InterviewLanguage::English);
+        assert_eq!(language_from_hint("español"), InterviewLanguage::Spanish);
+        assert_eq!(language_from_hint(""), InterviewLanguage::Spanish);
+    }
+
+    #[test]
+    fn detector_language_only_accepts_canonical_codes() {
+        assert_eq!(
+            language_from_detector_or_hint(Some("en"), "es"),
+            InterviewLanguage::English
+        );
+        assert_eq!(
+            language_from_detector_or_hint(Some("English"), "es"),
+            InterviewLanguage::Spanish
+        );
     }
 }

@@ -17,7 +17,7 @@ use crate::auth::{bearer_token, decode_claims, validate_claims};
 use crate::error::RelayError;
 use crate::perf::{relay_perf, step};
 use crate::providers;
-use crate::relay::body::{AgentType, ExpandResponseBody, RelayMessage};
+use crate::relay::body::{language_from_hint, AgentType, ExpandResponseBody, RelayMessage};
 use crate::relay::messages::{build_upstream_messages, system_prompt_len_chars};
 use crate::streaming::log::StreamLogCtx;
 use crate::streaming::{stream_deepener_finish_events, BoxedStream};
@@ -36,7 +36,10 @@ fn build_expand_messages(question: &str, response: &str) -> Vec<RelayMessage> {
     vec![
         RelayMessage {
             role: "user".into(),
-            content: Some(format!("PREGUNTA: {}", question.trim())),
+            content: Some(format!(
+                "INTERVIEW_QUESTION (preserve its language and meaning): {}",
+                question.trim()
+            )),
             image_url: None,
         },
         RelayMessage {
@@ -46,7 +49,7 @@ fn build_expand_messages(question: &str, response: &str) -> Vec<RelayMessage> {
         },
         RelayMessage {
             role: "user".into(),
-            content: Some("[continúa]".into()),
+            content: Some("[CONTINUE_RESPONSE]".into()),
             image_url: None,
         },
     ]
@@ -93,14 +96,24 @@ pub async fn expand_response(
 
     let user_id = claims.sub.as_key_segment();
     let expand_key = format!("{user_id}:expand");
-    if !st.expand_limiter.check_allowed(&expand_key).await.unwrap_or(false) {
+    if !st
+        .expand_limiter
+        .check_allowed(&expand_key)
+        .await
+        .unwrap_or(false)
+    {
         return Err(RelayError::ExpandRate);
     }
     step(&mut perf, "expand_rate_limit_ok");
 
+    let mut response_values = body.values.clone();
+    response_values.response_language = language_from_hint(&response_values.response_language)
+        .prompt_label()
+        .to_string();
+
     let system_prompt = st
         .prompts
-        .render(AgentType::Deepener, &body.values)
+        .render(AgentType::Deepener, &response_values)
         .map_err(RelayError::BadRequest)?;
 
     let upstream_messages = build_upstream_messages(
@@ -156,4 +169,21 @@ pub async fn expand_response(
 
     step(&mut perf, "upstream_ready");
     Ok(sse_response(Box::pin(stream)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_context_uses_neutral_protocol_markers() {
+        let messages =
+            build_expand_messages("What would you improve?", "I would start with data —");
+
+        assert_eq!(
+            messages[0].content.as_deref(),
+            Some("INTERVIEW_QUESTION (preserve its language and meaning): What would you improve?")
+        );
+        assert_eq!(messages[2].content.as_deref(), Some("[CONTINUE_RESPONSE]"));
+    }
 }

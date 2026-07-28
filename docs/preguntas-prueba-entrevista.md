@@ -6,7 +6,7 @@ Batería de **10 preguntas** (5 técnicas + 5 blandas) para evaluar el pipeline 
 
 | Dimensión | Dónde mirar |
 |-----------|-------------|
-| **Detección** | Evento SSE `question`: ¿extrajo la pregunta correcta? |
+| **Detección** | Evento SSE `question`: ¿extrajo la pregunta correcta y su `language` (`es` / `en`)? |
 | **Calidad opener** | 2 frases naturales, sin tono de manual, cierra en `—` si es técnica |
 | **Calidad deepener** | Continúa sin corte, tono humano, texto en negrita (`**...**`), sin meta-comentarios |
 | **Rapidez** | TTFT en logs + `openerTokens` / `deepenerTokens` / `totalTokens` en `metadata` |
@@ -228,7 +228,7 @@ supongamos que el product owner te pide una feature imposible para el deadline q
 Marca ✅ / ❌ después de cada curl:
 
 ```
-[ ] question.intelligible = true
+[ ] question.intelligible = true y question.language coincide con la entrevista
 [ ] question coincide con la esperada (o equivalente)
 [ ] Opener: exactamente ~2 frases, natural, sin etiquetas
 [ ] Hay espacio entre opener y deepener (no pegados)
@@ -254,7 +254,7 @@ Marca ✅ / ❌ después de cada curl:
 
 ```text
 event: question
-data: {"question":"...","intelligible":true}
+data: {"question":"...","intelligible":true,"language":"es"}
 
 data: ["Fíjate,"]
 data: [" DDD"]
@@ -271,4 +271,69 @@ event: metadata
 data: {"openerTokens":...,"deepenerTokens":...,"totalTokens":...}
 
 data: [DONE]
+```
+
+---
+
+## Pruebas bilingües de regresión
+
+Ejecuta estos casos además de la batería anterior. El campo `responseLanguage` es un
+fallback; cuando el detector reconoce una pregunta, `question.language` debe reflejar
+el idioma real de esa pregunta y la respuesta debe usar ese mismo idioma.
+
+### Inglés — técnica
+
+**Transcripción simulada**
+```text
+okay, can you walk me through how you would investigate a production incident?
+```
+
+**Evento esperado**
+```json
+{"question":"Can you walk me through how you would investigate a production incident?","intelligible":true,"language":"en"}
+```
+
+**Qué evaluar**
+- Opener: exactamente dos frases en inglés; la segunda deja una transición natural.
+- Deepener: continúa en inglés, explica criterio y acción sin convertirlo en una lista.
+
+### Inglés — conductual
+
+**Transcripción simulada**
+```text
+tell me about a time you had to disagree with a product decision, uh, and what you did
+```
+
+**Evento esperado**
+```json
+{"question":"Tell me about a time you had to disagree with a product decision and what you did.","intelligible":true,"language":"en"}
+```
+
+**Qué evaluar**
+- La respuesta no mezcla español ni anglicismos innecesarios.
+- La continuación aporta contexto, decisión y resultado sin inventar empresas o métricas.
+
+### Español — situacional con ruido
+
+**Transcripción simulada**
+```text
+ajá, bueno... imagina que cambia la prioridad a mitad de semana, ¿cómo reorganizas al equipo?
+```
+
+**Evento esperado**
+```json
+{"question":"Imagina que cambia la prioridad a mitad de semana, ¿cómo reorganizas al equipo?","intelligible":true,"language":"es"}
+```
+
+**Qué evaluar**
+- La respuesta se mantiene en español aunque `roleKeywords` incluya tecnología en inglés.
+- El deepener retoma exactamente el hilo del opener, sin “continuando” ni recapitulación.
+
+### Audio no inteligible
+
+Usa `responseLanguage: "English"` y una transcripción como `uh, okay, right`.
+El evento debe incluir `"language":"en"` y el único texto debe ser:
+
+```text
+Sorry, I didn't catch that. Could you repeat the question?
 ```
