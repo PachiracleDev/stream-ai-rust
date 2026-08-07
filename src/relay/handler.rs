@@ -152,28 +152,20 @@ async fn stream_interview(
         .prompts
         .render(AgentType::Opener, &body.values)
         .map_err(RelayError::BadRequest)?;
-    let deepener_system = st
-        .prompts
-        .render(AgentType::Deepener, &body.values)
-        .map_err(RelayError::BadRequest)?;
 
     let detector_cfg = st.ai_config.agent(AgentType::Detector);
     let opener_cfg = st.ai_config.agent(AgentType::Opener);
-    let deepener_cfg = st.ai_config.agent(AgentType::Deepener);
 
     tracing::info!(
         timestamp = %req_ts,
         interview_id,
         user_id = %user_id,
-        pipeline = "detector+opener+deepener",
+        pipeline = "detector+opener",
         detector_model = %detector_cfg.model,
         detector_upstream = ?detector_cfg.upstream,
         opener_model = %opener_cfg.model,
         opener_upstream = ?opener_cfg.upstream,
         opener_max_tokens = opener_cfg.max_tokens,
-        deepener_model = %deepener_cfg.model,
-        deepener_upstream = ?deepener_cfg.upstream,
-        deepener_max_tokens = deepener_cfg.max_tokens,
         "relay request"
     );
 
@@ -186,30 +178,21 @@ async fn stream_interview(
         &detector_system,
     );
     let opener_log = new_stream_log(
-        req_ts.clone(),
-        AgentType::Opener,
-        interview_id,
-        user_id.clone(),
-        st.ai_config.as_ref(),
-        &opener_system,
-    );
-    let deepener_log = new_stream_log(
         req_ts,
-        AgentType::Deepener,
+        AgentType::Opener,
         interview_id,
         user_id,
         st.ai_config.as_ref(),
-        &deepener_system,
+        &opener_system,
     );
 
-    let stream = interview_pipeline::stream_opener_then_deepener(
+    let stream = interview_pipeline::stream_detector_then_opener(
         st.ai_config.clone(),
         st.prompts.clone(),
         body.values,
         body.messages,
         detector_log,
         opener_log,
-        deepener_log,
     )
     .await
     .map_err(RelayError::AiProvider)?;
