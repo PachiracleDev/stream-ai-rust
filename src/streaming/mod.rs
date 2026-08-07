@@ -92,7 +92,3 @@ pub fn event_text_chunk(data: &str) -> Option<String> {
     None
 }
 
-/// Evento SSE con un fragmento de texto del modelo (`["..."]`).
-pub fn text_chunk_event(text: &str) -> Event {
-    Event::default().data(serde_json::json!([text]).to_string())
-}
