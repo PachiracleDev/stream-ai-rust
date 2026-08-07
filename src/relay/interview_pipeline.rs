@@ -1,4 +1,4 @@
-//! Pipeline entrevista: detector → opener → deepener en un solo SSE.
+//! Pipeline entrevista: detector → opener en un solo SSE.
 
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use crate::relay::body::{
 use crate::relay::messages::{build_upstream_messages, split_interview_messages};
 use crate::relay::prompts::PromptStore;
 use crate::streaming::log::StreamLogCtx;
-use crate::streaming::{stream_interview_finish_events, text_chunk_event, BoxedStream};
+use crate::streaming::{stream_interview_finish_events, BoxedStream};
 
 // ── Salida del detector ────────────────────────────────────────────────────────
 
@@ -83,39 +83,15 @@ fn localized_recovery(language: InterviewLanguage) -> &'static str {
     }
 }
 
-fn continuation_messages(question: &str, opener_text: &str) -> Vec<RelayMessage> {
-    vec![
-        RelayMessage {
-            role: "user".into(),
-            content: Some(format!(
-                "INTERVIEW_QUESTION (preserve its language and meaning): {}",
-                question.trim()
-            )),
-            image_url: None,
-        },
-        RelayMessage {
-            role: "assistant".into(),
-            content: Some(opener_text.to_string()),
-            image_url: None,
-        },
-        RelayMessage {
-            role: "user".into(),
-            content: Some("[CONTINUE_RESPONSE]".into()),
-            image_url: None,
-        },
-    ]
-}
-
 // ── Pipeline completo ──────────────────────────────────────────────────────────
 
-pub async fn stream_opener_then_deepener(
+pub async fn stream_detector_then_opener(
     config: Arc<AiConfig>,
     prompts: Arc<PromptStore>,
     values: RelayValues,
     client_messages: Vec<RelayMessage>,
     detector_log: Arc<StreamLogCtx>,
     opener_log: Arc<StreamLogCtx>,
-    deepener_log: Arc<StreamLogCtx>,
 ) -> Result<BoxedStream, String> {
     // Extrae transcripción nueva + historial previo (user/assistant).
     let (transcript, prior_history) = split_interview_messages(&client_messages);
@@ -139,9 +115,8 @@ pub async fn stream_opener_then_deepener(
     let mut response_values = values;
     response_values.response_language = language.prompt_label().to_string();
 
-    // Pre-renderiza los prompts del opener y deepener (puede fallar antes de emitir).
+    // Pre-renderiza el prompt del opener (puede fallar antes de emitir).
     let opener_system = prompts.render(AgentType::Opener, &response_values)?;
-    let deepener_system = prompts.render(AgentType::Deepener, &response_values)?;
 
     let stream = try_stream! {
         // ── Evento: pregunta detectada ────────────────────────────────────────
@@ -190,49 +165,10 @@ pub async fn stream_opener_then_deepener(
                 yield item?;
             }
 
-            let opener_text = opener_log.accumulated_output();
-
-            // ── Deepener ──────────────────────────────────────────────────────
-            // Historial previo + pregunta normalizada + arranque del opener.
-            let mut deepener_input = prior_history;
-            deepener_input.extend(continuation_messages(&clean_question, &opener_text));
-
-            let deepener_upstream = build_upstream_messages(
-                &deepener_system,
-                deepener_input,
-                config.max_history_messages,
-            );
-
-            let mut deepener_stream = providers::stream_agent(
-                config.as_ref(),
-                AgentType::Deepener,
-                deepener_upstream,
-                Some(deepener_log.clone()),
-                false,
-            )
-            .await?;
-
-            // Separador visual entre opener y deepener.
-            yield text_chunk_event(" ");
-
-            // El deepener va en negrita en el front (markdown **...**).
-            let mut bold_open = false;
-            while let Some(item) = deepener_stream.next().await {
-                if !bold_open {
-                    yield text_chunk_event("**");
-                    bold_open = true;
-                }
-                yield item?;
-            }
-            if bold_open {
-                yield text_chunk_event("**");
-            }
-
             // ── Metadata + DONE ───────────────────────────────────────────────
             for ev in stream_interview_finish_events(
                 Some(&detector_log),
                 &opener_log,
-                &deepener_log,
             ) {
                 yield ev;
             }
@@ -264,18 +200,6 @@ mod tests {
 
         assert_eq!(output.question.as_deref(), Some("¿Qué priorizas?"));
         assert_eq!(output.language, None);
-    }
-
-    #[test]
-    fn continuation_context_is_language_neutral_and_preserves_question() {
-        let messages = continuation_messages("¿Cómo priorizas?", "Mira, empiezo por el impacto —");
-
-        assert_eq!(messages.len(), 3);
-        assert_eq!(
-            messages[0].content.as_deref(),
-            Some("INTERVIEW_QUESTION (preserve its language and meaning): ¿Cómo priorizas?")
-        );
-        assert_eq!(messages[2].content.as_deref(), Some("[CONTINUE_RESPONSE]"));
     }
 
     #[test]
