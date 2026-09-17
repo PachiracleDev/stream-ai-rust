@@ -118,12 +118,10 @@ impl MemoryRateLimiter {
     async fn check_allowed(&self, key: &str) -> bool {
         let mut counters = self.counters.lock().await;
         let now = Instant::now();
-        let entry = counters
-            .entry(key.to_string())
-            .or_insert(WindowEntry {
-                count: 0,
-                window_start: now,
-            });
+        let entry = counters.entry(key.to_string()).or_insert(WindowEntry {
+            count: 0,
+            window_start: now,
+        });
 
         if now.duration_since(entry.window_start) >= self.window {
             entry.count = 0;
@@ -149,16 +147,18 @@ impl RateLimiter {
     /// Limiter en memoria local, independiente de `RATE_LIMIT_BACKEND`.
     pub fn memory_only(max: u32, window_secs: u64) -> Self {
         Self(RateLimiterInner::Memory(MemoryRateLimiter::new(
-            max, window_secs,
+            max,
+            window_secs,
         )))
     }
 
     pub async fn from_env(max: u32, window_secs: u64) -> Result<Self, redis::RedisError> {
         match RateLimitBackend::from_env() {
             RateLimitBackend::Disabled => Ok(Self(RateLimiterInner::Disabled)),
-            RateLimitBackend::Memory => Ok(Self(RateLimiterInner::Memory(
-                MemoryRateLimiter::new(max, window_secs),
-            ))),
+            RateLimitBackend::Memory => Ok(Self(RateLimiterInner::Memory(MemoryRateLimiter::new(
+                max,
+                window_secs,
+            )))),
             RateLimitBackend::Redis => {
                 let redis_url = std::env::var("REDIS_URL")
                     .expect("REDIS_URL requerida cuando RATE_LIMIT_BACKEND=redis");

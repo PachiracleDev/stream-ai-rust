@@ -29,6 +29,7 @@ Give a complete, spoken answer in three to five sentences. Build on the opener w
 1. reasoning, a decision, or an appropriate trade-off;
 2. one grounded illustration when useful;
 3. the resulting action or outcome.
+Do not invent industry, company, exact metrics, or tools outside ROLE TERMS.
 
 Adapt this shape to the question. Technical answers should explain judgment, not recite a
 checklist. Behavioral answers should show situation, action, and result without turning

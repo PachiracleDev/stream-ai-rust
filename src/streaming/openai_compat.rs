@@ -108,8 +108,8 @@ fn process_raw_sse(
         return Ok(SseDecision::Skip);
     }
 
-    let body = serde_json::to_string(&fragments)
-        .map_err(|e| format!("serialize stream chunk: {e}"))?;
+    let body =
+        serde_json::to_string(&fragments).map_err(|e| format!("serialize stream chunk: {e}"))?;
     let ev_payload = Event::default().data(body.clone());
     if let Some(c) = log_ctx {
         c.on_sse_data_payload(&body);
@@ -128,9 +128,7 @@ where
     loop {
         match StreamExt::next(raw_ess).await {
             None => {
-                return Err(
-                    "upstream cerró el stream SSE sin emitir contenido del modelo".into(),
-                );
+                return Err("upstream cerró el stream SSE sin emitir contenido del modelo".into());
             }
             Some(Err(e)) => return Err(format!("Event parse error: {e}")),
             Some(Ok(raw)) => match process_raw_sse(&raw, log_ctx)? {

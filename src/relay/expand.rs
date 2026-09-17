@@ -113,7 +113,7 @@ pub async fn expand_response(
 
     let system_prompt = st
         .prompts
-        .render(AgentType::Deepener, &response_values)
+        .render_with_transcript(AgentType::Deepener, &response_values, &body.question)
         .map_err(RelayError::BadRequest)?;
 
     let upstream_messages = build_upstream_messages(

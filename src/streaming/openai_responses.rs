@@ -31,10 +31,7 @@ pub fn chat_messages_to_responses_body(
     let mut input_items: Vec<Value> = Vec::new();
 
     for msg in messages {
-        let role = msg
-            .get("role")
-            .and_then(|r| r.as_str())
-            .unwrap_or("user");
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("user");
         let content = msg.get("content").cloned().unwrap_or(Value::Null);
 
         if role == "system" {
@@ -123,9 +120,9 @@ fn convert_user_content(content: &Value) -> Result<Vec<Value>, String> {
                         let url = o
                             .get("image_url")
                             .and_then(|iu| {
-                                iu.as_str()
-                                    .map(str::to_string)
-                                    .or_else(|| iu.get("url").and_then(|u| u.as_str()).map(str::to_string))
+                                iu.as_str().map(str::to_string).or_else(|| {
+                                    iu.get("url").and_then(|u| u.as_str()).map(str::to_string)
+                                })
                             })
                             .ok_or_else(|| "image_url sin url".to_string())?;
                         out.push(json!({ "type": "input_image", "image_url": url }));
@@ -226,9 +223,7 @@ where
     loop {
         match StreamExt::next(raw_ess).await {
             None => {
-                return Err(
-                    "upstream cerró el stream SSE sin emitir contenido del modelo".into(),
-                );
+                return Err("upstream cerró el stream SSE sin emitir contenido del modelo".into());
             }
             Some(Err(e)) => return Err(format!("Event parse error: {e}")),
             Some(Ok(raw)) => match process_raw_sse(&raw, log_ctx)? {

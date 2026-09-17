@@ -5,6 +5,7 @@
 
 mod app;
 mod auth;
+mod cerebras;
 mod config;
 mod error;
 mod health;
@@ -12,6 +13,7 @@ mod perf;
 mod providers;
 mod rate_limit;
 mod relay;
+mod session_memory;
 mod streaming;
 
 use std::net::SocketAddr;
@@ -28,11 +30,17 @@ use tower_http::cors::CorsLayer;
 use tracing::info;
 
 use app::AppState;
-use config::{env_u32, env_u64, load_dotenv_files, prompts_dir, relay_skip_jwt, AiConfig};
+use config::{
+    env_u32, env_u64, load_dotenv_files, prompts_dir, relay_skip_jwt, AiConfig, CerebrasConfigs,
+    RelayMode,
+};
 use rate_limit::{RateLimitBackend, RateLimiter};
+use relay::cerebras::translation_relay;
 use relay::expand::expand_response;
 use relay::handler::assistant_relay;
 use relay::prompts::PromptStore;
+use relay::question_detect::question_detect;
+use session_memory::QuestionSessionStore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,26 +70,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let prompts = PromptStore::load(&prompts_dir()).expect("cargar prompts markdown");
     let ai_config = AiConfig::from_env();
+    let relay_mode = RelayMode::from_env();
+    let cerebras = CerebrasConfigs::from_env().ok();
+    if relay_mode == RelayMode::Cerebras && cerebras.is_none() {
+        panic!(
+            "RELAY_MODE=cerebras (o CEREBRAS_API_KEY presente) requiere CEREBRAS_API_KEY válida"
+        );
+    }
 
     info!(
-        detector = %ai_config.detector.model,
-        detector_upstream = ?ai_config.detector.upstream,
-        detector_max_tokens = ai_config.detector.max_tokens,
-        opener = %ai_config.opener.model,
-        opener_upstream = ?ai_config.opener.upstream,
-        opener_max_tokens = ai_config.opener.max_tokens,
-        deepener = %ai_config.deepener.model,
-        deepener_upstream = ?ai_config.deepener.upstream,
-        deepener_max_tokens = ai_config.deepener.max_tokens,
-        image_solver = %ai_config.image_solver.model,
-        image_solver_upstream = ?ai_config.image_solver.upstream,
-        image_solver_max_tokens = ai_config.image_solver.max_tokens,
+        relay_mode = relay_mode.label(),
         prompts_dir = %prompts_dir().display(),
         "config loaded"
     );
 
+    if let Some(ref cfg) = cerebras {
+        info!(
+            cerebras_relay_model = %cfg.relay.model,
+            cerebras_detect_model = %cfg.detect.model,
+            cerebras_image_model = %cfg.image.model,
+            cerebras_url = %cfg.relay.chat_url,
+            "cerebras config loaded"
+        );
+    }
+
     let limiter = RateLimiter::from_env(rate_limit_max, rate_window_secs).await?;
     let expand_limiter = Arc::new(RateLimiter::memory_only(1, 60));
+    let translation_rate_limit_max = env_u32("TRANSLATION_RATE_LIMIT_MAX", 120).max(1);
+    let translation_limiter = Arc::new(RateLimiter::memory_only(translation_rate_limit_max, 60));
 
     info!(
         rate_limit_backend = rate_limit_backend.label(),
@@ -103,21 +119,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         skip_jwt,
         limiter: Arc::new(limiter),
         expand_limiter,
+        translation_limiter,
+        translation_rate_limit_max,
         rate_limit_max,
         ai_config: Arc::new(ai_config),
+        cerebras,
+        relay_mode,
+        question_sessions: QuestionSessionStore::new(),
         prompts: Arc::new(prompts),
     };
 
     let app = Router::new()
         .route("/health", get(health::health))
+        .route("/interviews/:id/ai/assistant-relay", post(assistant_relay))
         .route(
-            "/interviews/:id/ai/assistant-relay",
-            post(assistant_relay),
+            "/interviews/:id/ai/translation-relay",
+            post(translation_relay),
         )
-        .route(
-            "/interviews/:id/ai/expand-response",
-            post(expand_response),
-        )
+        .route("/interviews/:id/ai/expand-response", post(expand_response))
+        .route("/interviews/:id/ai/question-detect", post(question_detect))
         .layer(
             ServiceBuilder::new()
                 .layer(ConcurrencyLimitLayer::new(500))
@@ -134,7 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(addr).await?;
 
     info!(
-        "listening GET http://{addr}/health | POST http://{addr}/interviews/:id/ai/assistant-relay | POST http://{addr}/interviews/:id/ai/expand-response"
+        "listening GET http://{addr}/health | POST http://{addr}/interviews/:id/ai/assistant-relay | POST http://{addr}/interviews/:id/ai/question-detect | POST http://{addr}/interviews/:id/ai/translation-relay | POST http://{addr}/interviews/:id/ai/expand-response"
     );
 
     axum::serve(listener, app)

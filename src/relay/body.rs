@@ -118,6 +118,44 @@ where
     Ok(value.and_then(normalize_string_or_list))
 }
 
+/// Tipo de entrevista que adapta los prompts del pipeline de respuesta.
+/// Solo dos tipos: el cliente lo envía en cada request y puede cambiarlo mid-conversación.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum InterviewKind {
+    #[serde(alias = "hr", alias = "recursos-humanos", alias = "recursos_humanos")]
+    Hr,
+    #[default]
+    #[serde(alias = "tecnica", alias = "tech", alias = "technical")]
+    Technical,
+}
+
+impl InterviewKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hr => "recursos humanos",
+            Self::Technical => "técnica",
+        }
+    }
+
+    pub fn instructions(self) -> &'static str {
+        match self {
+            Self::Hr => "MODO ACTUAL: ENTREVISTA DE RECURSOS HUMANOS\n\
+- Este modo manda sobre todo lo demás. Si el historial previo suena técnico, NO lo imites: a partir de ahora respondes en modo RRHH.\n\
+- VOCABULARIO: cero jerga técnica. Nada de frameworks, arquitecturas, patrones ni siglas. Si la pregunta menciona una tecnología, habla del impacto humano o del resultado, no de la implementación.\n\
+- CONTENIDO: actitud, motivación, fit cultural, comunicación, trabajo en equipo, liderazgo, manejo de presión y conflictos.\n\
+- EJEMPLOS: situaciones reales con personas (un equipo, un conflicto, una entrega difícil), no detalles de código.\n\
+- TONO: cercano y humano, autoconocimiento sin sonar ensayado. Nada de frases hechas tipo \"soy proactivo\" ni manual de RRHH.",
+            Self::Technical => "MODO ACTUAL: ENTREVISTA TÉCNICA\n\
+- Este modo manda sobre todo lo demás. Si el historial previo suena blando o genérico, NO lo imites: a partir de ahora respondes en modo técnico.\n\
+- VOCABULARIO: usa los términos del puesto con naturalidad y precisión. Nada de respuestas vagas tipo \"usé buenas prácticas\".\n\
+- CONTENIDO: decisiones de ingeniería, trade-offs, arquitectura, bugs reales, producción, performance, diseño.\n\
+- EJEMPLOS: experiencias vividas concretas (qué construiste, qué se rompió, cómo lo resolviste).\n\
+- TONO: criterio de senior que lo implementó, no de quien lo leyó en un blog. Concreto sobre abstracto; evita definiciones de libro.",
+        }
+    }
+}
+
 /// Variables de plantilla inyectadas en los `.md` de `prompts/`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -151,9 +189,36 @@ pub struct RelayMessage {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayBody {
     pub messages: Vec<RelayMessage>,
     pub values: RelayValues,
+    /// Tipo de entrevista: "recursos-humanos" | "tecnica". Obligatorio; el cliente
+    /// lo envía en cada request, así un cambio de tipo mid-conversación aplica al instante.
+    pub kind: InterviewKind,
+}
+
+/// Body de `POST /interviews/:id/ai/question-detect`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuestionDetectBody {
+    pub session_id: String,
+    pub text: String,
+    /// Opcional: contexto de sesión si el cliente lo envía.
+    #[serde(default)]
+    pub kind: InterviewKind,
+    #[serde(default)]
+    pub values: Option<RelayValues>,
+}
+
+/// Traducción incremental dedicada a Cerebras.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationBody {
+    pub text: String,
+    pub target_language: String,
+    #[serde(default)]
+    pub source_language: Option<String>,
 }
 
 /// Body de `POST /interviews/:id/ai/expand-response`.
@@ -222,6 +287,7 @@ mod tests {
     fn relay_body_deserializes() {
         let body: RelayBody = serde_json::from_str(
             r#"{
+                "kind": "tecnica",
                 "values": {
                     "jobPosition": "Backend",
                     "regionalism": "es-MX",
@@ -232,6 +298,60 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body.messages.len(), 1);
+        assert_eq!(body.kind, InterviewKind::Technical);
+    }
+
+    #[test]
+    fn relay_body_requires_kind() {
+        let result = serde_json::from_str::<RelayBody>(
+            r#"{
+                "values": {
+                    "jobPosition": "Backend",
+                    "regionalism": "es-MX",
+                    "responseLanguage": "español"
+                },
+                "messages": [{ "role": "user", "content": "Hola" }]
+            }"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn relay_body_rejects_mixta() {
+        let result = serde_json::from_str::<RelayBody>(
+            r#"{
+                "kind": "mixta",
+                "values": {
+                    "jobPosition": "Backend",
+                    "regionalism": "es-MX",
+                    "responseLanguage": "español"
+                },
+                "messages": [{ "role": "user", "content": "Hola" }]
+            }"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn question_detect_body_deserializes_session_format() {
+        let body: QuestionDetectBody = serde_json::from_str(
+            r#"{
+                "sessionId": "269",
+                "text": "Hola, hola, probando. Hace unas preguntas."
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(body.session_id, "269");
+        assert_eq!(body.text, "Hola, hola, probando. Hace unas preguntas.");
+        assert!(body.values.is_none());
+    }
+
+    #[test]
+    fn interview_kind_accepts_aliases() {
+        let hr: InterviewKind = serde_json::from_str(r#""recursos-humanos""#).unwrap();
+        assert_eq!(hr, InterviewKind::Hr);
+        let tech: InterviewKind = serde_json::from_str(r#""tecnica""#).unwrap();
+        assert_eq!(tech, InterviewKind::Technical);
     }
 
     #[test]

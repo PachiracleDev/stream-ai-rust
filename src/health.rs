@@ -26,10 +26,7 @@ pub async fn health(State(st): State<AppState>) -> impl IntoResponse {
                 body["status"] = json!("degraded");
                 body["redis"] = json!("unavailable");
                 body["error"] = json!(e.to_string());
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(body),
-                );
+                return (StatusCode::SERVICE_UNAVAILABLE, Json(body));
             }
         },
         RateLimitBackend::Memory => {

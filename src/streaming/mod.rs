@@ -11,8 +11,7 @@ use futures::stream::Stream;
 
 use crate::streaming::log::StreamLogCtx;
 
-pub type BoxedStream =
-    std::pin::Pin<Box<dyn Stream<Item = Result<Event, String>> + Send>>;
+pub type BoxedStream = std::pin::Pin<Box<dyn Stream<Item = Result<Event, String>> + Send>>;
 
 /// Metadata final del relay con un solo agente deepener (p. ej. expand-response).
 pub fn stream_deepener_finish_events(log_ctx: &StreamLogCtx) -> Vec<Event> {
@@ -40,27 +39,24 @@ pub fn stream_finish_events(log_ctx: Option<&Arc<StreamLogCtx>>) -> Vec<Event> {
     events
 }
 
-/// Metadata final del pipeline detector + opener.
-///
-/// Detector y opener comparten modelo (Groq por defecto), por lo que sus tokens
-/// se suman bajo `openerTokens` para simplificar la factura del cliente.
-/// `deepenerTokens` se conserva en cero por compatibilidad con el contrato SSE.
+/// Metadata final del pipeline opener + deepener.
 pub fn stream_interview_finish_events(
     detector: Option<&StreamLogCtx>,
     opener: &StreamLogCtx,
+    deepener: &StreamLogCtx,
 ) -> Vec<Event> {
     let mut events = Vec::new();
     let detector_tokens = detector.and_then(|c| c.total_tokens()).unwrap_or(0);
     let opener_tokens = opener.total_tokens().unwrap_or(0);
+    let deepener_tokens = deepener.total_tokens().unwrap_or(0);
 
-    // Suma detector al opener: mismo modelo, mismo presupuesto.
     let opener_combined = detector_tokens + opener_tokens;
-    let total = opener_combined;
+    let total = opener_combined + deepener_tokens;
 
     if total > 0 {
         let mut meta = serde_json::Map::new();
         meta.insert("openerTokens".into(), serde_json::json!(opener_combined));
-        meta.insert("deepenerTokens".into(), serde_json::json!(0));
+        meta.insert("deepenerTokens".into(), serde_json::json!(deepener_tokens));
         meta.insert("totalTokens".into(), serde_json::json!(total));
         let data = serde_json::Value::Object(meta).to_string();
         events.push(Event::default().event("metadata").data(data));
@@ -90,5 +86,10 @@ pub fn event_text_chunk(data: &str) -> Option<String> {
         return Some(parts.join(""));
     }
     None
+}
+
+/// Evento SSE con un fragmento de texto del modelo (`["..."]`).
+pub fn text_chunk_event(text: &str) -> Event {
+    Event::default().data(serde_json::json!([text]).to_string())
 }
 

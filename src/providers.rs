@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
-use crate::config::{deepseek_thinking_disabled, openai_uses_responses_api, AiConfig, UpstreamKind};
+use crate::config::{
+    deepseek_thinking_disabled, openai_uses_responses_api, AiConfig, UpstreamKind,
+};
 use crate::relay::body::AgentType;
 use crate::streaming::anthropic;
 use crate::streaming::log::StreamLogCtx;

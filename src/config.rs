@@ -6,6 +6,10 @@
 const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_DEEPSEEK_URL: &str = "https://api.deepseek.com/chat/completions";
 const DEFAULT_GROQ_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
+const DEFAULT_CEREBRAS_URL: &str = "https://api.cerebras.ai/v1/chat/completions";
+const DEFAULT_CEREBRAS_RELAY_MODEL: &str = "qwen-3.8-27b";
+const DEFAULT_CEREBRAS_DETECT_MODEL: &str = "gpt-oss-120b";
+const DEFAULT_CEREBRAS_IMAGE_MODEL: &str = "qwen-3.8-27b";
 const DEFAULT_GROQ_MODEL: &str = "openai/gpt-oss-20b";
 
 const DEFAULT_MODEL_DETECTOR: &str = "groq";
@@ -200,7 +204,9 @@ pub fn classify_model(raw: &str) -> (UpstreamKind, String) {
     {
         return (UpstreamKind::Groq, trimmed.to_string());
     }
-    if lower.starts_with("gpt") || lower.starts_with('o') && lower.chars().nth(1).is_some_and(|c| c.is_ascii_digit()) {
+    if lower.starts_with("gpt")
+        || lower.starts_with('o') && lower.chars().nth(1).is_some_and(|c| c.is_ascii_digit())
+    {
         return (UpstreamKind::OpenAi, trimmed.to_string());
     }
 
@@ -322,6 +328,144 @@ pub fn relay_skip_jwt() -> bool {
     env_bool("RELAY_SKIP_JWT")
 }
 
+/// Backend de `assistant-relay`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayMode {
+    Pipeline,
+    Cerebras,
+}
+
+impl RelayMode {
+    pub fn from_env() -> Self {
+        match std::env::var("RELAY_MODE")
+            .ok()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("pipeline") => Self::Pipeline,
+            Some("cerebras") => Self::Cerebras,
+            // Si hay CEREBRAS_API_KEY, Cerebras es el default.
+            _ if non_empty_env("CEREBRAS_API_KEY").is_some() => Self::Cerebras,
+            _ => Self::Pipeline,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pipeline => "pipeline",
+            Self::Cerebras => "cerebras",
+        }
+    }
+}
+
+/// Perfil de modelo Cerebras (credenciales compartidas, modelo propio).
+#[derive(Debug, Clone)]
+pub struct CerebrasConfig {
+    pub api_key: String,
+    pub chat_url: String,
+    pub model: String,
+    pub max_tokens: u32,
+    pub temperature: f64,
+    pub top_p: f64,
+    pub reasoning_effort: String,
+}
+
+/// Modelos Cerebras por caso de uso.
+#[derive(Debug, Clone)]
+pub struct CerebrasConfigs {
+    pub relay: CerebrasConfig,
+    pub detect: CerebrasConfig,
+    pub image: CerebrasConfig,
+    pub translation: CerebrasConfig,
+}
+
+impl CerebrasConfigs {
+    pub fn from_env() -> Result<Self, String> {
+        let api_key = non_empty_env("CEREBRAS_API_KEY")
+            .ok_or_else(|| "CEREBRAS_API_KEY no configurada".to_string())?;
+        let chat_url = std::env::var("CEREBRAS_URL")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_CEREBRAS_URL.to_string());
+        let legacy_model = std::env::var("CEREBRAS_MODEL")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+
+        Ok(Self {
+            relay: build_cerebras_profile(
+                &api_key,
+                &chat_url,
+                "CEREBRAS_RELAY_MODEL",
+                legacy_model
+                    .as_deref()
+                    .unwrap_or(DEFAULT_CEREBRAS_RELAY_MODEL),
+                "CEREBRAS_RELAY_MAX_TOKENS",
+                1500,
+                0.6,
+                "CEREBRAS_RELAY_REASONING_EFFORT",
+            ),
+            detect: build_cerebras_profile(
+                &api_key,
+                &chat_url,
+                "CEREBRAS_DETECT_MODEL",
+                DEFAULT_CEREBRAS_DETECT_MODEL,
+                "CEREBRAS_DETECT_MAX_TOKENS",
+                256,
+                0.1,
+                "CEREBRAS_DETECT_REASONING_EFFORT",
+            ),
+            image: build_cerebras_profile(
+                &api_key,
+                &chat_url,
+                "CEREBRAS_IMAGE_MODEL",
+                DEFAULT_CEREBRAS_IMAGE_MODEL,
+                "CEREBRAS_IMAGE_MAX_TOKENS",
+                4000,
+                0.4,
+                "CEREBRAS_IMAGE_REASONING_EFFORT",
+            ),
+            translation: build_cerebras_profile(
+                &api_key,
+                &chat_url,
+                "CEREBRAS_TRANSLATION_MODEL",
+                DEFAULT_CEREBRAS_RELAY_MODEL,
+                "CEREBRAS_TRANSLATION_MAX_TOKENS",
+                600,
+                0.2,
+                "CEREBRAS_TRANSLATION_REASONING_EFFORT",
+            ),
+        })
+    }
+}
+
+fn build_cerebras_profile(
+    api_key: &str,
+    chat_url: &str,
+    model_env: &str,
+    default_model: &str,
+    max_tokens_env: &str,
+    default_max_tokens: u32,
+    default_temperature: f64,
+    reasoning_env: &str,
+) -> CerebrasConfig {
+    CerebrasConfig {
+        api_key: api_key.to_string(),
+        chat_url: chat_url.to_string(),
+        model: std::env::var(model_env)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| default_model.to_string()),
+        max_tokens: env_u32(max_tokens_env, default_max_tokens).clamp(1, 8000),
+        temperature: env_f64("CEREBRAS_TEMPERATURE", default_temperature).clamp(0.0, 2.0),
+        top_p: env_f64("CEREBRAS_TOP_P", 1.0).clamp(0.0, 1.0),
+        reasoning_effort: std::env::var(reasoning_env)
+            .ok()
+            .or_else(|| std::env::var("CEREBRAS_REASONING_EFFORT").ok())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "low".to_string()),
+    }
+}
+
 fn env_f64(name: &str, default: f64) -> f64 {
     std::env::var(name)
         .ok()
@@ -346,18 +490,12 @@ mod tests {
             classify_model("groq"),
             (UpstreamKind::Groq, DEFAULT_GROQ_MODEL.to_string())
         );
-        assert_eq!(
-            classify_model("claude-opus-4-7").0,
-            UpstreamKind::Anthropic
-        );
+        assert_eq!(classify_model("claude-opus-4-7").0, UpstreamKind::Anthropic);
         assert_eq!(
             classify_model("DeepSeek-V4-Flash").0,
             UpstreamKind::DeepSeek
         );
-        assert_eq!(
-            classify_model("gpt-5.4-nano").0,
-            UpstreamKind::OpenAi
-        );
+        assert_eq!(classify_model("gpt-5.4-nano").0, UpstreamKind::OpenAi);
         assert_eq!(
             classify_model("openai/gpt-oss-20b"),
             (UpstreamKind::Groq, "openai/gpt-oss-20b".to_string())

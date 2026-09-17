@@ -14,7 +14,12 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
-    pub fn record_openai_style(&self, prompt: Option<u32>, completion: Option<u32>, total: Option<u32>) {
+    pub fn record_openai_style(
+        &self,
+        prompt: Option<u32>,
+        completion: Option<u32>,
+        total: Option<u32>,
+    ) {
         if let Some(n) = prompt {
             self.input_tokens.store(n, Ordering::Relaxed);
         }

@@ -46,10 +46,7 @@ fn handle_payload(data: &str, log_ctx: Option<&Arc<StreamLogCtx>>) -> Result<Sse
         }
         "message_delta" => {
             if let Some(c) = log_ctx {
-                if let Some(output) = v
-                    .pointer("/usage/output_tokens")
-                    .and_then(|n| n.as_u64())
-                {
+                if let Some(output) = v.pointer("/usage/output_tokens").and_then(|n| n.as_u64()) {
                     c.token_usage.record_output(output as u32);
                 }
             }

@@ -52,11 +52,9 @@ pub fn validate_interview_messages(messages: &[RelayMessage]) -> Result<(), Stri
 }
 
 pub fn messages_have_image(messages: &[RelayMessage]) -> bool {
-    messages.iter().any(|m| {
-        m.image_url
-            .as_ref()
-            .is_some_and(|u| !u.trim().is_empty())
-    })
+    messages
+        .iter()
+        .any(|m| m.image_url.as_ref().is_some_and(|u| !u.trim().is_empty()))
 }
 
 pub fn validate_image_solver(messages: &[RelayMessage]) -> Result<(), String> {
@@ -85,10 +83,7 @@ pub fn split_interview_messages(messages: &[RelayMessage]) -> (String, Vec<Relay
         return (String::new(), Vec::new());
     };
 
-    let transcript = messages[idx]
-        .content
-        .clone()
-        .unwrap_or_default();
+    let transcript = messages[idx].content.clone().unwrap_or_default();
 
     let prior = messages[..idx]
         .iter()
@@ -104,9 +99,7 @@ fn is_history_role(role: &str) -> bool {
 }
 
 fn message_has_content(msg: &RelayMessage) -> bool {
-    msg.content
-        .as_deref()
-        .is_some_and(|c| !c.trim().is_empty())
+    msg.content.as_deref().is_some_and(|c| !c.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -125,7 +118,10 @@ mod tests {
     fn split_takes_last_user_as_transcript_and_prior_history() {
         let messages = vec![
             msg("user", "¿Qué es DDD?"),
-            msg("assistant", "Fíjate, DDD entra cuando el dominio se vuelve denso —"),
+            msg(
+                "assistant",
+                "Fíjate, DDD entra cuando el dominio se vuelve denso —",
+            ),
             msg("user", "ahora cuéntame de event sourcing"),
         ];
         let (transcript, prior) = split_interview_messages(&messages);
@@ -151,9 +147,7 @@ mod tests {
 
     #[test]
     fn build_upstream_keeps_most_recent_messages() {
-        let raw: Vec<RelayMessage> = (0..12)
-            .map(|i| msg("user", &format!("msg-{i}")))
-            .collect();
+        let raw: Vec<RelayMessage> = (0..12).map(|i| msg("user", &format!("msg-{i}"))).collect();
         let upstream = build_upstream_messages("sys", raw, 10);
         // system + 10 mensajes más recientes (msg-2 .. msg-11)
         assert_eq!(upstream.len(), 11);

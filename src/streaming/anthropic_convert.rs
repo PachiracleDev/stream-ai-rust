@@ -58,7 +58,8 @@ fn openai_content_to_anthropic_user(c: &Value) -> Result<Value, String> {
             }
             if blocks.is_empty() {
                 Ok(Value::String(String::new()))
-            } else if blocks.len() == 1 && blocks[0].get("type").and_then(|t| t.as_str()) == Some("text")
+            } else if blocks.len() == 1
+                && blocks[0].get("type").and_then(|t| t.as_str()) == Some("text")
             {
                 Ok(Value::String(
                     blocks[0]
@@ -166,7 +167,9 @@ fn assistant_to_anthropic(obj: &serde_json::Map<String, Value>) -> Result<Value,
     }
 }
 
-pub fn openai_style_to_anthropic(messages: Vec<Value>) -> Result<(Option<String>, Vec<Value>), String> {
+pub fn openai_style_to_anthropic(
+    messages: Vec<Value>,
+) -> Result<(Option<String>, Vec<Value>), String> {
     let mut system_parts: Vec<String> = Vec::new();
     let mut out: Vec<Value> = Vec::new();
 
