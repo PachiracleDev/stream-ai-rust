@@ -1,7 +1,4 @@
-//! Proxy SSE para agentes de entrevista (opener, deepener, image-solver).
-//!
-//! Modelos por agente vía env (`MODEL_OPENER`, `MODEL_DEEPENER`, `MODEL_IMAGE_SOLVER`).
-//! El proveedor (Groq / Claude / DeepSeek / OpenAI) se infiere del nombre del modelo.
+//! Proxy SSE de entrevista: question-detect, assistant-relay e image-solver (Cerebras).
 
 mod app;
 mod auth;
@@ -32,7 +29,6 @@ use tracing::info;
 use app::AppState;
 use config::{
     env_u32, env_u64, load_dotenv_files, prompts_dir, relay_skip_jwt, AiConfig, CerebrasConfigs,
-    RelayMode,
 };
 use rate_limit::{RateLimitBackend, RateLimiter};
 use relay::cerebras::translation_relay;
@@ -70,16 +66,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let prompts = PromptStore::load(&prompts_dir()).expect("cargar prompts markdown");
     let ai_config = AiConfig::from_env();
-    let relay_mode = RelayMode::from_env();
     let cerebras = CerebrasConfigs::from_env().ok();
-    if relay_mode == RelayMode::Cerebras && cerebras.is_none() {
-        panic!(
-            "RELAY_MODE=cerebras (o CEREBRAS_API_KEY presente) requiere CEREBRAS_API_KEY válida"
-        );
+    if cerebras.is_none() {
+        panic!("CEREBRAS_API_KEY requerida para question-detect, assistant-relay e image-solver");
     }
 
     info!(
-        relay_mode = relay_mode.label(),
         prompts_dir = %prompts_dir().display(),
         "config loaded"
     );
@@ -124,7 +116,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limit_max,
         ai_config: Arc::new(ai_config),
         cerebras,
-        relay_mode,
         question_sessions: QuestionSessionStore::new(),
         prompts: Arc::new(prompts),
     };

@@ -12,16 +12,13 @@ use axum::Json;
 
 use crate::app::AppState;
 use crate::auth::{bearer_token, decode_claims, validate_claims};
-use crate::config::RelayMode;
 use crate::error::RelayError;
 use crate::perf::{relay_perf, step};
 use crate::providers;
 use crate::relay::body::{AgentType, RelayBody};
 use crate::relay::interview_cerebras;
-use crate::relay::interview_pipeline;
 use crate::relay::messages::{
     build_upstream_messages, messages_have_image, system_prompt_len_chars, validate_image_solver,
-    validate_interview_messages,
 };
 use crate::streaming::log::StreamLogCtx;
 use crate::streaming::BoxedStream;
@@ -159,88 +156,6 @@ async fn stream_image_solver(
     Ok(sse_response(stream))
 }
 
-async fn stream_interview(
-    st: &AppState,
-    body: RelayBody,
-    interview_id: i64,
-    user_id: String,
-    req_ts: String,
-) -> Result<
-    (
-        AppendHeaders<[(HeaderName, HeaderValue); 3]>,
-        Sse<BoxedStream>,
-    ),
-    RelayError,
-> {
-    validate_interview_messages(&body.messages).map_err(RelayError::BadRequest)?;
-    let (question, _) = crate::relay::messages::split_interview_messages(&body.messages);
-    if question.trim().is_empty() {
-        return Err(RelayError::BadRequest(
-            "el último mensaje user debe tener contenido".into(),
-        ));
-    }
-
-    let opener_system_base = st
-        .prompts
-        .render(AgentType::Opener, &body.values)
-        .map_err(RelayError::BadRequest)?;
-    let deepener_system_base = st
-        .prompts
-        .render(AgentType::Deepener, &body.values)
-        .map_err(RelayError::BadRequest)?;
-    let kind_instructions = body.kind.instructions();
-    let opener_system = format!("{opener_system_base}\n\n{kind_instructions}");
-    let deepener_system = format!("{deepener_system_base}\n\n{kind_instructions}");
-
-    let opener_cfg = st.ai_config.agent(AgentType::Opener);
-    let deepener_cfg = st.ai_config.agent(AgentType::Deepener);
-
-    tracing::info!(
-        timestamp = %req_ts,
-        interview_id,
-        user_id = %user_id,
-        pipeline = "opener+deepener",
-        interview_kind = %body.kind.label(),
-        opener_model = %opener_cfg.model,
-        opener_upstream = ?opener_cfg.upstream,
-        opener_max_tokens = opener_cfg.max_tokens,
-        deepener_model = %deepener_cfg.model,
-        deepener_upstream = ?deepener_cfg.upstream,
-        deepener_max_tokens = deepener_cfg.max_tokens,
-        "relay request"
-    );
-
-    let opener_log = new_stream_log(
-        req_ts.clone(),
-        AgentType::Opener,
-        interview_id,
-        user_id.clone(),
-        st.ai_config.as_ref(),
-        &opener_system,
-    );
-    let deepener_log = new_stream_log(
-        req_ts,
-        AgentType::Deepener,
-        interview_id,
-        user_id,
-        st.ai_config.as_ref(),
-        &deepener_system,
-    );
-
-    let stream = interview_pipeline::stream_opener_then_deepener(
-        st.ai_config.clone(),
-        st.prompts.clone(),
-        body.values,
-        body.messages,
-        opener_log,
-        deepener_log,
-    )
-    .await
-    .map_err(RelayError::AiProvider)?;
-
-    Ok(sse_response(stream))
-}
-
 pub async fn assistant_relay(
     State(st): State<AppState>,
     Path((interview_id,)): Path<(i64,)>,
@@ -282,16 +197,8 @@ pub async fn assistant_relay(
         );
     }
 
-    if st.relay_mode == RelayMode::Cerebras {
-        let stream =
-            interview_cerebras::stream_cerebras_interview(&st, body, interview_id, &user_id)
-                .await?;
-        step(&mut perf, "cerebras_ok");
-        return Ok(sse_response(stream).into_response());
-    }
-
-    step(&mut perf, "upstream_ready");
-    Ok(stream_interview(&st, body, interview_id, user_id, req_ts)
-        .await?
-        .into_response())
+    let stream =
+        interview_cerebras::stream_cerebras_interview(&st, body, interview_id, &user_id).await?;
+    step(&mut perf, "cerebras_ok");
+    Ok(sse_response(stream).into_response())
 }

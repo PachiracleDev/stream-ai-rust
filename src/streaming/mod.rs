@@ -39,32 +39,6 @@ pub fn stream_finish_events(log_ctx: Option<&Arc<StreamLogCtx>>) -> Vec<Event> {
     events
 }
 
-/// Metadata final del pipeline opener + deepener.
-pub fn stream_interview_finish_events(
-    detector: Option<&StreamLogCtx>,
-    opener: &StreamLogCtx,
-    deepener: &StreamLogCtx,
-) -> Vec<Event> {
-    let mut events = Vec::new();
-    let detector_tokens = detector.and_then(|c| c.total_tokens()).unwrap_or(0);
-    let opener_tokens = opener.total_tokens().unwrap_or(0);
-    let deepener_tokens = deepener.total_tokens().unwrap_or(0);
-
-    let opener_combined = detector_tokens + opener_tokens;
-    let total = opener_combined + deepener_tokens;
-
-    if total > 0 {
-        let mut meta = serde_json::Map::new();
-        meta.insert("openerTokens".into(), serde_json::json!(opener_combined));
-        meta.insert("deepenerTokens".into(), serde_json::json!(deepener_tokens));
-        meta.insert("totalTokens".into(), serde_json::json!(total));
-        let data = serde_json::Value::Object(meta).to_string();
-        events.push(Event::default().event("metadata").data(data));
-    }
-    events.push(Event::default().data("[DONE]"));
-    events
-}
-
 pub(crate) fn finish_events(log_ctx: Option<&Arc<StreamLogCtx>>, emit_finish: bool) -> Vec<Event> {
     if emit_finish {
         stream_finish_events(log_ctx)

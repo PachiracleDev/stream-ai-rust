@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use jsonwebtoken::DecodingKey;
 
-use crate::config::{AiConfig, CerebrasConfigs, RelayMode};
+use crate::config::{AiConfig, CerebrasConfigs};
 use crate::rate_limit::RateLimiter;
 use crate::relay::prompts::PromptStore;
 use crate::session_memory::QuestionSessionStore;
@@ -18,7 +18,6 @@ pub struct AppState {
     pub rate_limit_max: u32,
     pub ai_config: Arc<AiConfig>,
     pub cerebras: Option<CerebrasConfigs>,
-    pub relay_mode: RelayMode,
     pub question_sessions: QuestionSessionStore,
     pub prompts: Arc<PromptStore>,
 }

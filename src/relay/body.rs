@@ -2,12 +2,10 @@
 
 use serde::{Deserialize, Deserializer};
 
-/// Tipo de agente entrevistador (define system prompt, modelo y presupuesto de tokens).
+/// Tipo de agente (prompt + modelo). El relay de entrevista ya no usa detector/opener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentType {
-    Detector,
-    Opener,
     Deepener,
     #[serde(rename = "image-solver")]
     ImageSolver,
@@ -55,22 +53,9 @@ pub fn language_from_hint(value: &str) -> InterviewLanguage {
     }
 }
 
-/// Prioriza exclusivamente los códigos emitidos por el detector y usa la
-/// preferencia del cliente como fallback para respuestas no inteligibles o
-/// modelos antiguos que no devuelvan `language`.
-pub fn language_from_detector_or_hint(detected: Option<&str>, fallback: &str) -> InterviewLanguage {
-    match detected.map(|value| value.trim().to_ascii_lowercase()) {
-        Some(value) if value == "en" => InterviewLanguage::English,
-        Some(value) if value == "es" => InterviewLanguage::Spanish,
-        _ => language_from_hint(fallback),
-    }
-}
-
 impl AgentType {
     pub fn prompt_filename(self) -> &'static str {
         match self {
-            Self::Detector => "detector.md",
-            Self::Opener => "opener.md",
             Self::Deepener => "deepener.md",
             Self::ImageSolver => "image-solver.md",
         }
@@ -78,8 +63,6 @@ impl AgentType {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Detector => "detector",
-            Self::Opener => "opener",
             Self::Deepener => "deepener",
             Self::ImageSolver => "image-solver",
         }
@@ -362,15 +345,4 @@ mod tests {
         assert_eq!(language_from_hint(""), InterviewLanguage::Spanish);
     }
 
-    #[test]
-    fn detector_language_only_accepts_canonical_codes() {
-        assert_eq!(
-            language_from_detector_or_hint(Some("en"), "es"),
-            InterviewLanguage::English
-        );
-        assert_eq!(
-            language_from_detector_or_hint(Some("English"), "es"),
-            InterviewLanguage::Spanish
-        );
-    }
 }

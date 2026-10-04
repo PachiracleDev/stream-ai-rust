@@ -1,15 +1,14 @@
 # Preguntas de prueba — `POST /interviews/:id/ai/assistant-relay`
 
-Batería de **10 preguntas** (5 técnicas + 5 blandas) para evaluar el pipeline **detector → opener → deepener** en entrevistas de trabajo.
+Batería de **10 preguntas** (5 técnicas + 5 blandas) para `question-detect` y `assistant-relay` (Cerebras).
 
 **Qué medir en cada prueba**
 
 | Dimensión | Dónde mirar |
 |-----------|-------------|
-| **Detección** | Evento SSE `question`: ¿extrajo la pregunta correcta y su `language` (`es` / `en`)? |
-| **Calidad opener** | 2 frases naturales, sin tono de manual, cierra en `—` si es técnica |
-| **Calidad deepener** | Continúa sin corte, tono humano, texto en negrita (`**...**`), sin meta-comentarios |
-| **Rapidez** | TTFT en logs + `openerTokens` / `deepenerTokens` / `totalTokens` en `metadata` |
+| **Detección** | `POST .../question-detect`: ¿extrajo la pregunta correcta y su `language` (`es` / `en`)? |
+| **Respuesta** | `assistant-relay`: respuesta hablada, sin etiquetas Pregunta/Respuesta, sin inventar contexto |
+| **Rapidez** | TTFT en logs + `deepenerTokens` / `totalTokens` en `metadata` |
 
 **Body base** (ajusta `INTERVIEW_ID`, host y JWT según tu `.env`):
 
@@ -228,12 +227,10 @@ supongamos que el product owner te pide una feature imposible para el deadline q
 Marca ✅ / ❌ después de cada curl:
 
 ```
-[ ] question.intelligible = true y question.language coincide con la entrevista
+[ ] question-detect: intelligible = true y language coincide con la pregunta
 [ ] question coincide con la esperada (o equivalente)
-[ ] Opener: exactamente ~2 frases, natural, sin etiquetas
-[ ] Hay espacio entre opener y deepener (no pegados)
-[ ] Deepener: continúa sin "continuando...", "claro", "necesito..."
-[ ] Deepener: sin tono IA / TED / LinkedIn
+[ ] assistant-relay: respuesta hablada, sin etiquetas ni meta-comentarios
+[ ] No inventa empresas, métricas ni stack que no estén en values/historial
 [ ] metadata.totalTokens razonable (< 4000 en condiciones normales)
 [ ] Tiempo hasta primer chunk aceptable (< 2–3 s en local)
 ```
@@ -244,8 +241,8 @@ Marca ✅ / ❌ después de cada curl:
 
 1. **1, 6** — calentamiento (fáciles, validan flujo básico).
 2. **2, 3, 7** — casos medios variados.
-3. **5** — estrés del detector (ruido + última pregunta).
-4. **4, 10** — preguntas largas (calidad del deepener bajo carga).
+3. **5** — estrés de question-detect (ruido + última pregunta).
+4. **4, 10** — preguntas largas (calidad de assistant-relay bajo carga).
 5. **8, 9** — blandas con riesgo de respuestas genéricas.
 
 ---
@@ -253,33 +250,25 @@ Marca ✅ / ❌ después de cada curl:
 ## Respuesta SSE esperada (estructura)
 
 ```text
-event: question
-data: {"question":"...","intelligible":true,"language":"es"}
-
 data: ["Fíjate,"]
 data: [" DDD"]
 ...
-data: [" —"]
-
-data: [" "]
-data: ["**"]
-data: ["porque"]
-...
-data: ["**"]
 
 event: metadata
-data: {"openerTokens":...,"deepenerTokens":...,"totalTokens":...}
+data: {"openerTokens":0,"deepenerTokens":...,"totalTokens":...,"elapsedMs":...}
 
 data: [DONE]
 ```
+
+`assistant-relay` **no** emite `event: question`. La detección va a `question-detect`.
 
 ---
 
 ## Pruebas bilingües de regresión
 
 Ejecuta estos casos además de la batería anterior. El campo `responseLanguage` es un
-fallback; cuando el detector reconoce una pregunta, `question.language` debe reflejar
-el idioma real de esa pregunta y la respuesta debe usar ese mismo idioma.
+fallback; `question-detect` debe devolver el idioma real de la pregunta y
+`assistant-relay` debe responder en ese mismo idioma.
 
 ### Inglés — técnica
 

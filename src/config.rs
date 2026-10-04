@@ -1,7 +1,7 @@
 //! Configuración desde variables de entorno.
 //!
-//! Cambia solo `MODEL_OPENER` / `MODEL_DEEPENER` / `MODEL_IMAGE_SOLVER` (y sus API keys/URLs)
-//! para alternar entre Groq, Claude, DeepSeek u OpenAI/Azure.
+//! Entrevista: Cerebras (`CEREBRAS_*`). `MODEL_DEEPENER` / `MODEL_IMAGE_SOLVER`
+//! quedan para expand-response e image-solver si no hay Cerebras.
 
 const DEFAULT_OPENAI_URL: &str = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_DEEPSEEK_URL: &str = "https://api.deepseek.com/chat/completions";
@@ -12,10 +12,6 @@ const DEFAULT_CEREBRAS_DETECT_MODEL: &str = "gpt-oss-120b";
 const DEFAULT_CEREBRAS_IMAGE_MODEL: &str = "qwen-3.8-27b";
 const DEFAULT_GROQ_MODEL: &str = "openai/gpt-oss-20b";
 
-const DEFAULT_MODEL_DETECTOR: &str = "groq";
-const DEFAULT_MAX_TOKENS_DETECTOR: u32 = 256;
-const DEFAULT_MODEL_OPENER: &str = "groq";
-const DEFAULT_MAX_TOKENS_OPENER: u32 = 384;
 const DEFAULT_MODEL_DEEPENER: &str = "groq";
 const DEFAULT_MAX_TOKENS_DEEPENER: u32 = 512;
 const DEFAULT_MODEL_IMAGE_SOLVER: &str = "gpt-5.4-nano";
@@ -41,7 +37,7 @@ impl UpstreamKind {
     }
 }
 
-/// Modelo + tokens para un agente (`opener`, `deepener`, `image-solver`).
+/// Modelo + tokens para un agente (`deepener`, `image-solver`).
 #[derive(Debug, Clone)]
 pub struct AgentModelConfig {
     pub upstream: UpstreamKind,
@@ -52,8 +48,6 @@ pub struct AgentModelConfig {
 
 #[derive(Debug, Clone)]
 pub struct AiConfig {
-    pub detector: AgentModelConfig,
-    pub opener: AgentModelConfig,
     pub deepener: AgentModelConfig,
     pub image_solver: AgentModelConfig,
     pub temperature: f64,
@@ -131,18 +125,6 @@ impl AiConfig {
     pub fn from_env() -> Self {
         let credentials = UpstreamCredentials::from_env();
         Self {
-            detector: resolve_agent_model(
-                "MODEL_DETECTOR",
-                DEFAULT_MODEL_DETECTOR,
-                "MAX_TOKENS_DETECTOR",
-                DEFAULT_MAX_TOKENS_DETECTOR,
-            ),
-            opener: resolve_agent_model(
-                "MODEL_OPENER",
-                DEFAULT_MODEL_OPENER,
-                "MAX_TOKENS_OPENER",
-                DEFAULT_MAX_TOKENS_OPENER,
-            ),
             deepener: resolve_agent_model(
                 "MODEL_DEEPENER",
                 DEFAULT_MODEL_DEEPENER,
@@ -164,8 +146,6 @@ impl AiConfig {
     pub fn agent(&self, agent: crate::relay::body::AgentType) -> &AgentModelConfig {
         use crate::relay::body::AgentType;
         match agent {
-            AgentType::Detector => &self.detector,
-            AgentType::Opener => &self.opener,
             AgentType::Deepener => &self.deepener,
             AgentType::ImageSolver => &self.image_solver,
         }
@@ -326,36 +306,6 @@ pub fn env_bool(name: &str) -> bool {
 /// Solo pruebas locales: omite Bearer/JWT en `assistant-relay`.
 pub fn relay_skip_jwt() -> bool {
     env_bool("RELAY_SKIP_JWT")
-}
-
-/// Backend de `assistant-relay`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelayMode {
-    Pipeline,
-    Cerebras,
-}
-
-impl RelayMode {
-    pub fn from_env() -> Self {
-        match std::env::var("RELAY_MODE")
-            .ok()
-            .map(|s| s.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("pipeline") => Self::Pipeline,
-            Some("cerebras") => Self::Cerebras,
-            // Si hay CEREBRAS_API_KEY, Cerebras es el default.
-            _ if non_empty_env("CEREBRAS_API_KEY").is_some() => Self::Cerebras,
-            _ => Self::Pipeline,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Pipeline => "pipeline",
-            Self::Cerebras => "cerebras",
-        }
-    }
 }
 
 /// Perfil de modelo Cerebras (credenciales compartidas, modelo propio).

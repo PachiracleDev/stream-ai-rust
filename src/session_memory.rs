@@ -1,4 +1,7 @@
-//! Memoria local por sesión: párrafos STT, preguntas respondidas y última pregunta.
+//! Memoria local por sesión de `question-detect`.
+//!
+//! Solo guarda estado; las decisiones (repetida, continuación, escenario, nueva)
+//! las toma el modelo.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -6,17 +9,21 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 const MAX_PARAGRAPHS: usize = 8;
+const MAX_ANSWERED: usize = 12;
 
-#[derive(Clone, Default)]
-struct SessionState {
-    paragraphs: Vec<String>,
-    answered: Vec<String>,
-    last_question: Option<String>,
+#[derive(Clone, Default, Debug)]
+pub struct SessionSnapshot {
+    /// Fragmentos STT anteriores al actual, viejo → nuevo.
+    pub paragraphs: Vec<String>,
+    pub answered: Vec<String>,
+    pub last_question: Option<String>,
+    /// Escenario planteado sin pregunta todavía.
+    pub pending_context: Option<String>,
 }
 
 #[derive(Clone, Default)]
 pub struct QuestionSessionStore {
-    inner: Arc<RwLock<HashMap<String, SessionState>>>,
+    inner: Arc<RwLock<HashMap<String, SessionSnapshot>>>,
 }
 
 impl QuestionSessionStore {
@@ -28,102 +35,53 @@ impl QuestionSessionStore {
         format!("{user_id}:{}", session_id.trim())
     }
 
-    /// Añade un fragmento STT y devuelve los párrafos actuales (máx. 8, viejo → nuevo).
-    pub async fn push_paragraph(&self, key: &str, text: &str) -> Vec<String> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return self.paragraphs(key).await;
-        }
+    /// Estado previo al fragmento actual y registro del fragmento en el historial.
+    pub async fn begin_turn(&self, key: &str, fragment: &str) -> SessionSnapshot {
         let mut guard = self.inner.write().await;
         let state = guard.entry(key.to_string()).or_default();
-        state.paragraphs.push(trimmed.to_string());
-        if state.paragraphs.len() > MAX_PARAGRAPHS {
-            let drop = state.paragraphs.len() - MAX_PARAGRAPHS;
-            state.paragraphs.drain(0..drop);
+        let snapshot = state.clone();
+        let trimmed = fragment.trim();
+        if !trimmed.is_empty() {
+            state.paragraphs.push(trimmed.to_string());
+            if state.paragraphs.len() > MAX_PARAGRAPHS {
+                let drop = state.paragraphs.len() - MAX_PARAGRAPHS;
+                state.paragraphs.drain(0..drop);
+            }
         }
-        state.paragraphs.clone()
+        snapshot
     }
 
-    pub async fn paragraphs(&self, key: &str) -> Vec<String> {
-        self.inner
-            .read()
-            .await
-            .get(key)
-            .map(|s| s.paragraphs.clone())
-            .unwrap_or_default()
-    }
-
-    pub async fn last_question(&self, key: &str) -> Option<String> {
-        self.inner
-            .read()
-            .await
-            .get(key)
-            .and_then(|s| s.last_question.clone())
-    }
-
-    pub async fn set_last_question(&self, key: &str, question: &str) {
-        let trimmed = question.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        let mut guard = self.inner.write().await;
-        guard.entry(key.to_string()).or_default().last_question = Some(trimmed.to_string());
-    }
-
-    pub async fn answered_questions(&self, key: &str) -> Vec<String> {
-        self.inner
-            .read()
-            .await
-            .get(key)
-            .map(|s| s.answered.clone())
-            .unwrap_or_default()
-    }
-
-    pub async fn record_answered(&self, key: &str, question: &str) {
-        let normalized = normalize_question(question);
-        if normalized.is_empty() {
+    /// Pregunta a responder: pasa a ser la pendiente; la anterior queda como
+    /// respondida salvo que la nueva la continúe (ya la incluye).
+    pub async fn record_question(&self, key: &str, question: &str, continues_last: bool) {
+        let question = question.trim();
+        if question.is_empty() {
             return;
         }
         let mut guard = self.inner.write().await;
         let state = guard.entry(key.to_string()).or_default();
-        if !state
-            .answered
-            .iter()
-            .any(|q| questions_equivalent(q, &normalized))
-        {
-            state.answered.push(normalized);
+        if let Some(prev) = state.last_question.take() {
+            if !continues_last && !state.answered.contains(&prev) {
+                state.answered.push(prev);
+                if state.answered.len() > MAX_ANSWERED {
+                    let drop = state.answered.len() - MAX_ANSWERED;
+                    state.answered.drain(0..drop);
+                }
+            }
         }
-        state.last_question = Some(question.trim().to_string());
+        state.last_question = Some(question.to_string());
+        state.pending_context = None;
     }
 
-    pub async fn already_answered(&self, key: &str, question: &str) -> bool {
-        let normalized = normalize_question(question);
-        if normalized.is_empty() {
-            return false;
+    /// Guarda el escenario completo (el modelo ya lo devuelve fusionado).
+    pub async fn set_pending_context(&self, key: &str, context: &str) {
+        let context = context.trim();
+        if context.is_empty() {
+            return;
         }
-        self.inner.read().await.get(key).is_some_and(|state| {
-            state
-                .answered
-                .iter()
-                .any(|q| questions_equivalent(q, &normalized))
-        })
+        let mut guard = self.inner.write().await;
+        guard.entry(key.to_string()).or_default().pending_context = Some(context.to_string());
     }
-}
-
-pub fn normalize_question(raw: &str) -> String {
-    raw.to_lowercase()
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
-        .filter(|w| !w.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn questions_equivalent(a: &str, b: &str) -> bool {
-    if a == b {
-        return true;
-    }
-    a.contains(b) || b.contains(a)
 }
 
 #[cfg(test)]
@@ -131,23 +89,37 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn push_paragraph_keeps_last_eight() {
+    async fn begin_turn_returns_previous_state_and_keeps_last_eight() {
         let store = QuestionSessionStore::new();
-        let key = "u:1";
         for i in 0..10 {
-            store.push_paragraph(key, &format!("p{i}")).await;
+            store.begin_turn("k", &format!("p{i}")).await;
         }
-        let paragraphs = store.paragraphs(key).await;
-        assert_eq!(paragraphs.len(), 8);
-        assert_eq!(paragraphs[0], "p2");
-        assert_eq!(paragraphs[7], "p9");
+        let snap = store.begin_turn("k", "p10").await;
+        assert_eq!(snap.paragraphs.len(), 8);
+        assert_eq!(snap.paragraphs[0], "p2");
+        assert_eq!(snap.paragraphs[7], "p9");
     }
 
-    #[test]
-    fn normalize_strips_punctuation_and_case() {
+    #[tokio::test]
+    async fn record_question_moves_previous_to_answered_unless_continuation() {
+        let store = QuestionSessionStore::new();
+        store.record_question("k", "Q1", false).await;
+        store.record_question("k", "Q1 + detalle", true).await;
+        store.record_question("k", "Q2", false).await;
+        let snap = store.begin_turn("k", "").await;
+        assert_eq!(snap.answered, vec!["Q1 + detalle".to_string()]);
+        assert_eq!(snap.last_question.as_deref(), Some("Q2"));
+    }
+
+    #[tokio::test]
+    async fn pending_context_is_cleared_when_a_question_is_recorded() {
+        let store = QuestionSessionStore::new();
+        store.set_pending_context("k", "Escenario").await;
         assert_eq!(
-            normalize_question("¿How would you design a rate limiter?"),
-            "how would you design a rate limiter"
+            store.begin_turn("k", "").await.pending_context.as_deref(),
+            Some("Escenario")
         );
+        store.record_question("k", "Escenario. ¿Qué harías?", false).await;
+        assert!(store.begin_turn("k", "").await.pending_context.is_none());
     }
 }

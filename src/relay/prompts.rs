@@ -8,34 +8,25 @@ use crate::relay::language::{normalize_language_label, response_language_instruc
 
 pub struct PromptStore {
     templates: HashMap<AgentType, String>,
-    cerebras_qa: String,
+    cerebras_qa_technical: String,
+    cerebras_qa_hr: String,
     question_detect: String,
 }
 
 impl PromptStore {
     pub fn load(dir: &Path) -> Result<Self, String> {
         let mut templates = HashMap::new();
-        for agent in [
-            AgentType::Detector,
-            AgentType::Opener,
-            AgentType::Deepener,
-            AgentType::ImageSolver,
-        ] {
+        for agent in [AgentType::Deepener, AgentType::ImageSolver] {
             let path = dir.join(agent.prompt_filename());
             let raw = std::fs::read_to_string(&path)
                 .map_err(|e| format!("no se pudo leer prompt {}: {e}", path.display()))?;
             templates.insert(agent, raw);
         }
-        let cerebras_path = dir.join("cerebras_qa.md");
-        let cerebras_qa = std::fs::read_to_string(&cerebras_path)
-            .map_err(|e| format!("no se pudo leer prompt {}: {e}", cerebras_path.display()))?;
-        let detect_path = dir.join("question_detect.md");
-        let question_detect = std::fs::read_to_string(&detect_path)
-            .map_err(|e| format!("no se pudo leer prompt {}: {e}", detect_path.display()))?;
         Ok(Self {
             templates,
-            cerebras_qa,
-            question_detect,
+            cerebras_qa_technical: read_prompt(dir, "cerebras_qa_technical.md")?,
+            cerebras_qa_hr: read_prompt(dir, "cerebras_qa_hr.md")?,
+            question_detect: read_prompt(dir, "question_detect.md")?,
         })
     }
 
@@ -57,12 +48,21 @@ impl PromptStore {
     }
 
     pub fn render_cerebras_qa(&self, values: &RelayValues, kind: InterviewKind) -> String {
-        render_with_kind(&self.cerebras_qa, values, kind, "")
+        let template = match kind {
+            InterviewKind::Technical => &self.cerebras_qa_technical,
+            InterviewKind::Hr => &self.cerebras_qa_hr,
+        };
+        render_with_kind(template, values, kind, "")
     }
 
     pub fn render_question_detect(&self, values: &RelayValues, kind: InterviewKind) -> String {
         render_with_kind(&self.question_detect, values, kind, "")
     }
+}
+
+fn read_prompt(dir: &Path, filename: &str) -> Result<String, String> {
+    let path = dir.join(filename);
+    std::fs::read_to_string(&path).map_err(|e| format!("no se pudo leer prompt {}: {e}", path.display()))
 }
 
 fn render_with_kind(
@@ -100,4 +100,38 @@ fn render_template(template: &str, v: &RelayValues, transcript: &str) -> String 
         .replace("{{lastRole}}", last_jobs)
         .replace("{{roleKeywords}}", role_keywords)
         .replace("{{techKeywords}}", role_keywords)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_values() -> RelayValues {
+        RelayValues {
+            job_position: "Full Stack Developer".into(),
+            regionalism: "Peruano".into(),
+            response_language: "es".into(),
+            profile_minimal: Some("3 años en TypeScript y React.".into()),
+            last_jobs: Some("On Road Technology Solutions: Full Stack.".into()),
+            role_keywords: Some("TypeScript, React, NestJS".into()),
+        }
+    }
+
+    #[test]
+    fn technical_prompt_uses_spoken_technical_contract() {
+        let store = PromptStore::load(Path::new("prompts")).unwrap();
+        let prompt = store.render_cerebras_qa(&sample_values(), InterviewKind::Technical);
+        assert!(prompt.contains("MODO: ENTREVISTA TÉCNICA"));
+        assert!(prompt.contains("locking optimista"));
+        assert!(prompt.contains("On Road Technology Solutions"));
+        assert!(prompt.contains("Solo el texto hablado"));
+    }
+
+    #[test]
+    fn hr_prompt_keeps_no_jargon_rule() {
+        let store = PromptStore::load(Path::new("prompts")).unwrap();
+        let prompt = store.render_cerebras_qa(&sample_values(), InterviewKind::Hr);
+        assert!(prompt.contains("ENTREVISTA DE RECURSOS HUMANOS"));
+        assert!(prompt.contains("Cero jerga técnica"));
+    }
 }

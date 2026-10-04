@@ -89,9 +89,25 @@ Fragmentos como `¿Cómo?`, `How so?`, `y eso por qué?` se **expanden** usando 
 }
 ```
 
+### Response 200 — escenario + pregunta
+
+Cuando el entrevistador plantea un escenario y luego pregunta sobre él, `question` trae **los dos juntos**, en el mismo request o en requests distintos:
+
+```json
+{
+  "shouldRespond": true,
+  "question": "Tienes una API Java que hace 5 llamadas HTTP externas en secuencia y tarda 4 segundos. ¿Qué alternativas analizarías para reducir la latencia?",
+  "intelligible": true
+}
+```
+
+Si un fragmento **solo** plantea el escenario ("Tienes una API Java que…", "Imagina que tu equipo…") y aún no pregunta nada, responde `{ "shouldRespond": false }` y el escenario queda guardado en la sesión. Se antepone a la siguiente pregunta. Un escenario con tarea implícita ("Imagina que tienes que diseñar un sistema de pagos") sí se responde de inmediato.
+
+Si el STT reenvía una pregunta ya detectada seguida de otra **de otro tema**, solo se devuelve la nueva.
+
 ### Response 200 — nada que responder
 
-Repetición, pregunta ya respondida, saludo o relleno:
+Repetición, pregunta ya respondida, saludo, relleno o escenario sin pregunta todavía:
 
 ```json
 { "shouldRespond": false }
@@ -107,7 +123,7 @@ o, cuando el fragmento tenía una pregunta pero ya fue respondida:
 
 - Llamar con cada fragmento STT nuevo del entrevistador.
 - Si `shouldRespond: true` → enviar `question` como último `messages[].content` (role `user`) a `assistant-relay`.
-- El ruido obvio ("ok", "gracias", "perfecto") se responde en ~10 ms sin llamar al modelo; el resto ~300–600 ms.
+- Cada fragmento lo evalúa el modelo (cualquier idioma o puesto), ~300–550 ms.
 
 ---
 
@@ -176,7 +192,7 @@ data: [" la"]
 data: [" diferencia"]
 ...
 event: metadata
-data: {"openerTokens":0,"deepenerTokens":487,"totalTokens":1234}
+data: {"openerTokens":0,"deepenerTokens":487,"totalTokens":1234,"elapsedMs":812}
 
 data: [DONE]
 ```
@@ -184,7 +200,7 @@ data: [DONE]
 | Evento | Descripción |
 |--------|-------------|
 | `data: ["..."]` | Fragmento de texto de la respuesta. Concatenar todos los strings. |
-| `event: metadata` | Tokens consumidos: `openerTokens`, `deepenerTokens`, `totalTokens`. |
+| `event: metadata` | Tokens: `deepenerTokens` y `totalTokens` son los de esta respuesta. `openerTokens` queda en `0` por compatibilidad con clientes viejos (ya no hay opener). |
 | `data: [DONE]` | Fin del stream. |
 
 **Nunca** emite `event: question` ni JSON de detección.
