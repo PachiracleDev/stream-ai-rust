@@ -5,7 +5,7 @@ pub mod qa;
 pub mod vision;
 
 pub use detect::complete_detect;
-pub use qa::stream_answer;
+pub use qa::stream_spoken_answer;
 pub use vision::stream_image_solver;
 
 use std::time::Instant;

@@ -12,6 +12,7 @@ mod rate_limit;
 mod relay;
 mod session_memory;
 mod streaming;
+mod turn_log;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

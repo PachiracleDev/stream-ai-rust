@@ -158,6 +158,22 @@ pub struct RelayValues {
         deserialize_with = "deserialize_optional_string_or_list"
     )]
     pub role_keywords: Option<String>,
+    #[serde(default)]
+    pub regional_expressions: Option<String>,
+    #[serde(default)]
+    pub regional_avoid: Option<String>,
+    #[serde(default)]
+    pub salary_expectation: Option<String>,
+}
+
+/// Cómo se cerró el turno que el front está evaluando.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectTrigger {
+    #[default]
+    Auto,
+    SilenceAfterPremise,
+    Manual,
 }
 
 /// Mensaje del cliente (texto y/o imagen).
@@ -179,15 +195,31 @@ pub struct RelayBody {
     /// Tipo de entrevista: "recursos-humanos" | "tecnica". Obligatorio; el cliente
     /// lo envía en cada request, así un cambio de tipo mid-conversación aplica al instante.
     pub kind: InterviewKind,
+    /// Pregunta ya armada por el detector. Si viene, el historial lo pone el backend.
+    #[serde(default)]
+    pub question: Option<String>,
+    #[serde(default)]
+    pub continues_last: bool,
+    /// `technical` usa el prompt técnico; el resto de kinds de pregunta usan RRHH.
+    #[serde(default)]
+    pub question_kind: Option<String>,
 }
 
 /// Body de `POST /interviews/:id/ai/question-detect`.
+///
+/// El turno manda solo `seq`, `newText`, `recentContext` y `trigger`.
+/// `values` y `kind` son la configuración del prompt (puesto e idioma): el relay
+/// no tiene la ficha de la entrevista, así que la recuerda la primera vez.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuestionDetectBody {
-    pub session_id: String,
-    pub text: String,
-    /// Opcional: contexto de sesión si el cliente lo envía.
+    pub seq: u64,
+    #[serde(default)]
+    pub new_text: String,
+    #[serde(default)]
+    pub recent_context: String,
+    #[serde(default)]
+    pub trigger: DetectTrigger,
     #[serde(default)]
     pub kind: InterviewKind,
     #[serde(default)]
@@ -316,16 +348,20 @@ mod tests {
     }
 
     #[test]
-    fn question_detect_body_deserializes_session_format() {
+    fn question_detect_body_is_the_four_turn_fields() {
         let body: QuestionDetectBody = serde_json::from_str(
             r#"{
-                "sessionId": "269",
-                "text": "Hola, hola, probando. Hace unas preguntas."
+                "seq": 42,
+                "newText": "¿Por qué?",
+                "recentContext": "¿Usarías microservicios?",
+                "trigger": "auto"
             }"#,
         )
         .unwrap();
-        assert_eq!(body.session_id, "269");
-        assert_eq!(body.text, "Hola, hola, probando. Hace unas preguntas.");
+        assert_eq!(body.seq, 42);
+        assert_eq!(body.new_text, "¿Por qué?");
+        assert_eq!(body.recent_context, "¿Usarías microservicios?");
+        assert_eq!(body.trigger, DetectTrigger::Auto);
         assert!(body.values.is_none());
     }
 

@@ -13,8 +13,80 @@ pub enum DetectAction {
     Respond,
     /// Solo se planteó un escenario; esperar la pregunta.
     Premise,
+    /// La frase quedó a medias.
+    Wait,
     /// Repetición, eco, relleno o comentario sin pregunta.
     Ignore,
+}
+
+impl DetectAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Respond => "respond",
+            Self::Premise => "premise",
+            Self::Wait => "wait",
+            Self::Ignore => "ignore",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestionKind {
+    Technical,
+    Behavioral,
+    Logistics,
+    CandidateQuestions,
+    Smalltalk,
+    None,
+}
+
+impl QuestionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Technical => "technical",
+            Self::Behavioral => "behavioral",
+            Self::Logistics => "logistics",
+            Self::CandidateQuestions => "candidate_questions",
+            Self::Smalltalk => "smalltalk",
+            Self::None => "none",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "technical" => Self::Technical,
+            "behavioral" => Self::Behavioral,
+            "logistics" => Self::Logistics,
+            "candidate_questions" => Self::CandidateQuestions,
+            "smalltalk" => Self::Smalltalk,
+            _ => Self::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confidence {
+    High,
+    Medium,
+    Low,
+}
+
+impl Confidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim() {
+            "high" => Self::High,
+            "low" => Self::Low,
+            _ => Self::Medium,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -26,6 +98,8 @@ pub struct DetectOutput {
     pub context: String,
     /// La pregunta amplía lastQuestion (no la reemplaza).
     pub continues_last: bool,
+    pub kind: QuestionKind,
+    pub confidence: Confidence,
 }
 
 fn detect_json_schema() -> Value {
@@ -39,23 +113,32 @@ fn detect_json_schema() -> Value {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["respond", "premise", "ignore"],
-                        "description": "respond: hay pregunta o tarea nueva para el candidato. premise: currentFragment solo plantea un escenario y aún no pide nada. ignore: repetición/eco de algo ya preguntado sin nada nuevo, relleno, saludo o comentario."
+                        "enum": ["respond", "premise", "wait", "ignore"],
+                        "description": "respond: hay pregunta o tarea nueva. premise: newText solo plantea un escenario. wait: la frase quedó a medias. ignore: eco, relleno o comentario sin pedido."
                     },
                     "question": {
                         "type": "string",
-                        "description": "Si action=respond: la pregunta completa y autocontenida, en el idioma original, incluyendo el escenario del que depende y la pregunta pendiente que complementa. Vacío en otro caso."
+                        "description": "Si action=respond: la pregunta completa, en el idioma de la entrevista. Vacío en otro caso."
                     },
                     "context": {
                         "type": "string",
-                        "description": "Si action=premise: el escenario completo acumulado (pendingContext + lo nuevo), en el idioma original. Vacío en otro caso."
+                        "description": "Si action=premise: el escenario completo acumulado, en el idioma de la entrevista. Vacío en otro caso."
                     },
                     "continuesLast": {
                         "type": "boolean",
-                        "description": "true si question amplía o complementa lastQuestion (la incluye). false si es otra pregunta."
+                        "description": "true si question amplía lastQuestion. false si es otra pregunta."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["technical", "behavioral", "logistics", "candidate_questions", "smalltalk", "none"],
+                        "description": "Tipo de la pregunta cuando action=respond. none en las demás acciones."
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"]
                     }
                 },
-                "required": ["action", "question", "context", "continuesLast"],
+                "required": ["action", "question", "context", "continuesLast", "kind", "confidence"],
                 "additionalProperties": false
             }
         }
@@ -70,8 +153,8 @@ pub async fn complete_detect(
     let body = json!({
         "model": config.model,
         "stream": false,
-        "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
+        "max_tokens": 300,
+        "temperature": 0,
         "top_p": config.top_p,
         "reasoning_effort": config.reasoning_effort,
         "response_format": detect_json_schema(),
@@ -85,6 +168,7 @@ pub async fn complete_detect(
         .post(&config.chat_url)
         .header("Authorization", format!("Bearer {}", config.api_key))
         .header("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(4))
         .json(&body)
         .send()
         .await
@@ -140,8 +224,9 @@ fn parse_detect_output(raw: &Value) -> DetectOutput {
     let question = text("question");
     let context = text("context");
     let action = match raw.get("action").and_then(Value::as_str) {
-        Some("respond") if !question.is_empty() => DetectAction::Respond,
-        Some("premise") if !context.is_empty() => DetectAction::Premise,
+        Some("respond") => DetectAction::Respond,
+        Some("premise") => DetectAction::Premise,
+        Some("wait") => DetectAction::Wait,
         _ => DetectAction::Ignore,
     };
     DetectOutput {
@@ -152,7 +237,16 @@ fn parse_detect_output(raw: &Value) -> DetectOutput {
             .get("continuesLast")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        kind: QuestionKind::parse(raw.get("kind").and_then(Value::as_str).unwrap_or("none")),
+        confidence: Confidence::parse(
+            raw.get("confidence").and_then(Value::as_str).unwrap_or("medium"),
+        ),
     }
+}
+
+#[cfg(test)]
+pub fn parse_detect_output_for_test(raw: &Value) -> DetectOutput {
+    parse_detect_output(raw)
 }
 
 #[cfg(test)]
@@ -174,8 +268,15 @@ mod tests {
         assert_eq!(out.action, DetectAction::Premise);
 
         let out = parse_detect_output(&json!({
+            "action": "wait", "question": "", "context": "", "continuesLast": false, "confidence": "low"
+        }));
+        assert_eq!(out.action, DetectAction::Wait);
+        assert_eq!(out.confidence, Confidence::Low);
+
+        let out = parse_detect_output(&json!({
             "action": "respond", "question": "", "context": "", "continuesLast": false
         }));
-        assert_eq!(out.action, DetectAction::Ignore);
+        assert_eq!(out.action, DetectAction::Respond);
+        assert!(out.question.is_empty());
     }
 }

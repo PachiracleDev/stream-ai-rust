@@ -1,0 +1,99 @@
+{
+  "cases": [
+    {
+      "name": "manual forces respond with the new text",
+      "trigger": "manual",
+      "newText": "cuéntame de un conflicto",
+      "lastQuestion": "pregunta previa",
+      "model": {
+        "action": "ignore",
+        "question": "",
+        "context": "",
+        "continuesLast": false,
+        "kind": "none",
+        "confidence": "low"
+      },
+      "expect": {
+        "action": "respond",
+        "question": "cuéntame de un conflicto",
+        "corrections": ["manual_force_respond"]
+      }
+    },
+    {
+      "name": "manual without new text reuses the last question",
+      "trigger": "manual",
+      "newText": "",
+      "lastQuestion": "¿Cuál es tu disponibilidad?",
+      "model": {
+        "action": "wait",
+        "question": "",
+        "context": "",
+        "continuesLast": false,
+        "kind": "none",
+        "confidence": "medium"
+      },
+      "expect": {
+        "action": "respond",
+        "question": "¿Cuál es tu disponibilidad?",
+        "corrections": ["manual_force_respond"]
+      }
+    },
+    {
+      "name": "automatic empty respond becomes ignore",
+      "trigger": "auto",
+      "newText": "ajá",
+      "lastQuestion": "",
+      "model": {
+        "action": "respond",
+        "question": "  ",
+        "context": "",
+        "continuesLast": false,
+        "kind": "smalltalk",
+        "confidence": "low"
+      },
+      "expect": {
+        "action": "ignore",
+        "question": "",
+        "corrections": ["empty_respond_to_ignore"]
+      }
+    },
+    {
+      "name": "empty premise becomes ignore",
+      "trigger": "auto",
+      "newText": "te cuento un caso",
+      "lastQuestion": "",
+      "model": {
+        "action": "premise",
+        "question": "",
+        "context": "   ",
+        "continuesLast": false,
+        "kind": "none",
+        "confidence": "high"
+      },
+      "expect": {
+        "action": "ignore",
+        "question": "",
+        "corrections": ["empty_premise_to_ignore"]
+      }
+    },
+    {
+      "name": "silence after premise keeps a complete question",
+      "trigger": "silence_after_premise",
+      "newText": "",
+      "lastQuestion": "",
+      "model": {
+        "action": "respond",
+        "question": "Tienes una API que tarda 4 segundos. ¿Cómo lo abordarías?",
+        "context": "",
+        "continuesLast": false,
+        "kind": "technical",
+        "confidence": "medium"
+      },
+      "expect": {
+        "action": "respond",
+        "question": "Tienes una API que tarda 4 segundos. ¿Cómo lo abordarías?",
+        "corrections": []
+      }
+    }
+  ]
+}

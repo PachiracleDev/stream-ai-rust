@@ -23,14 +23,29 @@ pub enum RelayError {
     AiProvider(String),
     #[error("solicitud inválida: {0}")]
     BadRequest(String),
+    #[error("seq ya procesado")]
+    StaleSeq { last_seq: u64 },
 }
 
 impl IntoResponse for RelayError {
     fn into_response(self) -> Response {
         use RelayError::*;
 
+        if let StaleSeq { last_seq } = &self {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "seq ya procesado",
+                    "message": "seq ya procesado",
+                    "lastSeq": last_seq,
+                })),
+            )
+                .into_response();
+        }
+
         let (status, msg) = match &self {
             Auth => (StatusCode::UNAUTHORIZED, self.to_string()),
+            StaleSeq { .. } => unreachable!(),
             Token(e) => (StatusCode::UNAUTHORIZED, e.to_string()),
             IdMismatch => (StatusCode::FORBIDDEN, self.to_string()),
             BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
